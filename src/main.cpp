@@ -40,10 +40,9 @@ enum VisualMode {
 // Nastavte výchozí režim zde:
 VisualMode activeVisualMode = VISUAL_STARFIELD_WARP;
 
-// Automatické střídání režimů (v sekundách, 0 = vypnuto)
-// Pokud je nastaveno např. 20, režimy se po 20s samy střídají jako galerie!
+// Automatické střídání režimů (v sekundách, 0 = vypnuto - zůstane trvale zvolený režim)
 uint32_t autoCycleIntervalSeconds = 0;
-bool autoCycleEnabled = true;
+bool autoCycleEnabled = false;
 
 // Řízení stavové LED diody (false = trvale zhasnutá, žádné rušivé blikání)
 bool enableLed = false;
@@ -423,17 +422,17 @@ void initStarfield() {
 void renderStarfieldWarp() {
     u8g2.clearBuffer();
     
-    // Rychlost letu (Warp factor) přímo řízená okamžitou energií z antény:
-    // Klid (0.1) -> 1.2c (plynulý majestátní let hlubokým vesmírem)
-    // Silné rušení (0.7) -> 6.5c (hvězdy se natahují do paprsků)
-    // Detekce paketu / špička -> 14.0c (masivní skok do hyperprostoru!)
-    float warpSpeed = 1.0f + smoothedEnergy * 7.5f;
+    // Pomalá, plynulá a majestátní rychlost letu řízená rušením:
+    // Klid v místnosti (E ~ 0.2): ~0.45c až 0.6c (klidný, pohlcující průlet)
+    // Vyšší rušení (E ~ 0.7): ~1.3c až 1.5c (hvězdy zrychlí a natahují se do paprsků)
+    // Detekce paketu / RF špička: ~3.8c (krátký záblesk hyperprostoru)
+    float warpSpeed = 0.22f + smoothedEnergy * 1.40f;
     if (burstFramesLeft > 0) {
-        warpSpeed = 14.0f;
+        warpSpeed = 3.8f;
     }
     
     // Úběžník se mírně naklání podle směru kosmického větru
-    int cx = 64 + cosmicWind * 8;
+    int cx = 64 + cosmicWind * 6;
     int cy = 36;
     
     // 1. Vykreslení hvězd a světelných paprsků
@@ -443,8 +442,8 @@ void renderStarfieldWarp() {
         
         // Pokud hvězda minula kameru, znovuzrodit vzadu s novou entropií
         if (stars[i].z <= 1.0f) {
-            stars[i].x = ((float)harvestEntropyByte() - 128.0f) * 1.6f;
-            stars[i].y = ((float)harvestEntropyByte() - 128.0f) * 0.9f;
+            stars[i].x = ((float)harvestEntropyByte() - 128.0f) * 1.8f;
+            stars[i].y = ((float)harvestEntropyByte() - 128.0f) * 1.0f;
             stars[i].z = 100.0f;
             stars[i].pz = 100.0f;
             continue;
@@ -461,13 +460,13 @@ void renderStarfieldWarp() {
             continue;
         }
         
-        // Při vyšších rychlostech natáhnout do světelných paprsků (Warp streaks)
-        if (warpSpeed > 2.2f && (px != sx || py != sy)) {
+        // Při zrychlení natáhnout do světelných paprsků (Warp streaks)
+        if (warpSpeed > 0.95f && (px != sx || py != sy)) {
             u8g2.drawLine(px, constrain(py, 10, 63), sx, constrain(sy, 10, 63));
         } else {
             u8g2.drawPixel(sx, sy);
             // Zářící hvězdy blízko kamery
-            if (stars[i].z < 26.0f && warpSpeed < 5.0f) {
+            if (stars[i].z < 28.0f && warpSpeed < 1.2f) {
                 u8g2.drawPixel(sx + 1, sy);
                 u8g2.drawPixel(sx, sy + 1);
             }
