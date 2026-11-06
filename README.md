@@ -11,11 +11,11 @@ Na OLED displeji SSD1306 (128×64) nabízí **4 přepínatelné vizualizační r
 ### 1. 🌌 VISUAL_STARFIELD_WARP (3D Průlet hvězdami / Warp Speed Flight)
 - **Vizuál:** 72 trojrozměrných hvězd s plnou 3D perspektivní projekcí proudících z hloubi vesmíru přímo proti vám.
 - **Warp efekt:** 
-  - Při klidném éteru klidný let hlubokým vesmírem rychlostí ~1.2c (blízké hvězdy září jako křížky).
-  - Při vyšším rušení rychlost akceleruje až k 7.0c a hvězdy se natahují do světelných laserových paprsků (Warp streaks).
-  - Při detekci paketu (klíče od auta, LoRa přenos) proběhne **okamžitý skok do hyperprostoru** (14.0c)!
+  - Při klidném éteru majestátní a pomalý průlet hlubokým vesmírem rychlostí ~0.4c–0.6c (blízké hvězdy jemně září a plynule proplouvají).
+  - Při vyšším rušení rychlost citlivě akceleruje k 1.2c–1.5c a hvězdy se natahují do světelných laserových paprsků (Warp streaks).
+  - Při silném RF impulsu / detekci paketu proběhne **krátký záblesk skoku do hyperprostoru** (~3.8c).
 - **Řízení kurzu:** Kosmický vítr a frekvenční gradient naklánějí úběžník letu (Yaw/Pitch).
-- **HUD:** `WARP 433.92M -74dB 4.5c` s jemným středovým zaměřovačem.
+- **HUD:** `WARP 433.92M -74dB 0.5c` s jemným středovým zaměřovačem.
 
 ### 2. ⚡ VISUAL_TESLA_LIGHTNING (Elektrická plazma / Blesková bouře)
 - **Vizuál:** Ze spodní cívky/elektrody šlehají do tmy procedurální rozvětvené blesky a létají z nich plazmové částice.
