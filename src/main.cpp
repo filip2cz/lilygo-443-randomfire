@@ -106,6 +106,7 @@ uint16_t adcNoiseVal = 0;
 int cosmicWind = 0;             // -1 (doleva), 0, +1 (doprava)
 uint8_t burstFramesLeft = 0;    // Počet snímků plazmové erupce
 float fps = 0.0f;
+float smoothedEnergy = 0.0f;    // Vyhlazená energie ohně (0.0 = klid, 1.0 = plný žár)
 
 // History buffer for waterfall oscilloscope (128 columns)
 uint8_t noiseHistory[SCREEN_WIDTH];
@@ -196,29 +197,47 @@ void initFire() {
 void updateFirePhysics() {
     int bottomRow = SCREEN_HEIGHT - 1;
     
-    // Vliv okolního rádiového rušení na intenzitu paliva
-    // Klidný pokoj (-120 dBm) -> rfEnergy = 0; Rušení (-70 dBm) -> rfEnergy = 50
-    int rfEnergy = map(constrain(currentRssi, -125, -60), -125, -60, 0, 50);
+    // ─── Adaptivní energie ohně ───
+    // Wideband typicky 0x04..0x30 v běžném prostředí
+    // Odečteme šumový podlahu (~0x04) a škálujeme
+    float wbNorm = constrain(((float)currentWideband - 4.0f) / 40.0f, 0.0f, 1.0f);
+    // RSSI typicky -75..-70 dBm v klidném pokoji, -60..-40 při silném signálu
+    float rssiNorm = constrain((float)(currentRssi + 80) / 40.0f, 0.0f, 1.0f);
+    float targetEnergy = constrain(wbNorm * 0.7f + rssiNorm * 0.3f, 0.05f, 1.0f);
+    
     if (burstFramesLeft > 0) {
-        rfEnergy = 80;
+        targetEnergy = 1.0f; // Detekce paketu → plný žár
         burstFramesLeft--;
     }
+    
+    // Exponenciální klouzavý průměr pro plynulé přechody
+    // Rozhoření je pomalejší (0.06), vyhasínání ještě pomalejší (0.03)
+    float alpha = (targetEnergy > smoothedEnergy) ? 0.06f : 0.03f;
+    smoothedEnergy += alpha * (targetEnergy - smoothedEnergy);
+    float E = smoothedEnergy; // 0.0 = doutnavé uhlíky, 1.0 = plný žár
+    
+    // ─── Parametry odvozené z energie ───
+    // Palivo (fuel): 80 (doutnavé) .. 255 (plný žár)
+    int baseFuel = (int)(80.0f + 175.0f * E);
+    // Chladnutí (decay): 10 (tiché = krátký plamen) .. 3 (hlasité = vysoký plamen)
+    int decayMin = (int)(10.0f - 7.0f * E); // 10..3
+    int decayRange = 3; // +0..+3 náhodná variace
+    // Pravděpodobnost mezer ve spodním řádku: 25% (tiché) .. 3% (hlasité)
+    int gapThreshold = (int)(64.0f - 56.0f * E); // 64..8 z 256
     
     // 1. Spodní řádek: Generování žhavých uhlíků (Fuel Line)
     for (int x = 0; x < SCREEN_WIDTH; x++) {
         uint8_t r = harvestEntropyByte();
         
-        // Většina pixelů tvoří žhavé uhlíky (230-255)
-        // Občasné mezery ((r & 0x07) == 0) vytvářejí přirozené jazyky plamene
-        if ((r & 0x07) == 0) {
-            heat[bottomRow][x] = 0; // Mezera mezi plameny
+        if (r < gapThreshold) {
+            heat[bottomRow][x] = 0; // Mezera — jazyky plamene
         } else {
-            int fuel = 200 + rfEnergy + (r & 0x1F);
+            int fuel = baseFuel + (r & 0x1F);
             heat[bottomRow][x] = (uint8_t)constrain(fuel, 0, 255);
             
-            // Špička rušení vymrští jiskru
-            if (r > 248 || (burstFramesLeft > 0 && r > 230)) {
-                spawnSpark(x, (float)rfEnergy / 50.0f);
+            // Jiskry jen při silném rušení
+            if (E > 0.6f && r > 248) {
+                spawnSpark(x, E);
             }
         }
     }
@@ -229,16 +248,13 @@ void updateFirePhysics() {
             uint8_t pixel = heat[y][x];
             
             if (pixel == 0) {
-                // Žádné teplo nepřenášet
-                if (heat[y - 1][x] > 4) heat[y - 1][x] -= 4;
+                // Prázdný pixel: jen lehce chladit sousedy nahoře
+                if (heat[y - 1][x] > 3) heat[y - 1][x] -= 3;
                 else heat[y - 1][x] = 0;
             } else {
                 uint8_t r = harvestEntropyByte();
                 
-                // Chladnutí: základ 3 až 6, při vyšším rušení plameny šlehají výše
-                int decay = 3 + (r & 3);
-                if (rfEnergy > 30 && decay > 3) decay--; // Nižší chladnutí = vyšší plamen
-                if (burstFramesLeft > 0) decay = 1 + (r & 1); // Solární erupce šlehá k nebi
+                int decay = decayMin + (r & decayRange);
                 
                 // Drift: -1, 0, +1 ovlivněný kosmickým větrem
                 int drift = ((int)(r >> 2) & 3) - 1 + cosmicWind;
@@ -247,10 +263,8 @@ void updateFirePhysics() {
                 if (dstX < 0) dstX = 0;
                 else if (dstX >= SCREEN_WIDTH) dstX = SCREEN_WIDTH - 1;
                 
-                int dstY = y - 1;
-                
                 int cooled = (int)pixel - decay;
-                heat[dstY][dstX] = (cooled > 0) ? (uint8_t)cooled : 0;
+                heat[y - 1][dstX] = (cooled > 0) ? (uint8_t)cooled : 0;
             }
         }
     }
@@ -571,11 +585,12 @@ void loop() {
         fps = (float)frameCount * 1000.0f / (float)(now - lastFpsCalc);
         frameCount = 0;
         lastFpsCalc = now;
-        Serial.printf("[COSMIC FIRE] FPS: %.1f | Freq: %.2f MHz | RSSI: %d dBm | Wideband: 0x%02X | Mode: %d\n",
+        Serial.printf("[COSMIC FIRE] FPS: %.1f | Freq: %.2f MHz | RSSI: %d dBm | WB: 0x%02X | Energy: %.0f%% | Mode: %d\n",
                       fps,
                       (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f,
                       currentRssi,
                       currentWideband,
+                      smoothedEnergy * 100.0f,
                       (int)currentMode);
     }
 }
