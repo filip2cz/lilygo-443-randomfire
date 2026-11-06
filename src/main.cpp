@@ -43,6 +43,9 @@ VisualMode activeVisualMode = VISUAL_TESLA_LIGHTNING;
 uint32_t autoCycleIntervalSeconds = 20;
 bool autoCycleEnabled = true;
 
+// Řízení stavové LED diody (false = trvale zhasnutá, žádné rušivé blikání)
+bool enableLed = false;
+
 // Persistence do flash paměti (Preferences) a RTC RAM
 Preferences prefs;
 RTC_DATA_ATTR int rtcSavedMode = -1;
@@ -692,6 +695,11 @@ void handleButton() {
 // LEDC PWM LIGHT (ADAPTIVE LIGHTING)
 // =============================================================================
 void updateFlickerLED() {
+    if (!enableLed) {
+        digitalWrite(BOARD_LED, LOW);
+        return;
+    }
+    
     if (activeVisualMode == VISUAL_TESLA_LIGHTNING) {
         // V režimu Tesla LED pulzuje jako stroboskop při výbojích
         int ledVal = (int)(smoothedEnergy * 180.0f);
@@ -742,9 +750,14 @@ void setup() {
         modeBannerTimer = millis() + 1500;
     }
     
-    ledcSetup(0, 5000, 8);
-    ledcAttachPin(BOARD_LED, 0);
-    ledcWrite(0, 100);
+    if (enableLed) {
+        ledcSetup(0, 5000, 8);
+        ledcAttachPin(BOARD_LED, 0);
+        ledcWrite(0, 100);
+    } else {
+        pinMode(BOARD_LED, OUTPUT);
+        digitalWrite(BOARD_LED, LOW); // Trvale zhasnuto
+    }
     
     pinMode(BOOT_BUTTON, INPUT_PULLUP);
     pinMode(ADC_NOISE_PIN, INPUT);
