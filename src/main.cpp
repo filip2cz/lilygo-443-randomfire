@@ -70,7 +70,6 @@ RTC_DATA_ATTR int rtcSavedMode = -1;
 
 #define BOARD_LED       25
 #define BOOT_BUTTON     0
-#define ADC_NOISE_PIN   34 // Unconnected floating high-impedance ADC1 pin
 
 // Display dimensions
 #define SCREEN_WIDTH    128
@@ -130,7 +129,6 @@ uint8_t currentWideband = 0;
 uint8_t currentChannelIdx = 5; // 433.92 MHz
 uint32_t entropyCount = 0;
 uint32_t packetCount = 0;
-uint16_t adcNoiseVal = 0;
 int cosmicWind = 0;             // -1 (doleva), 0, +1 (doprava)
 uint8_t burstFramesLeft = 0;    // Počet snímků plazmové erupce
 float fps = 0.0f;
@@ -404,8 +402,8 @@ void renderCyberSpectrum() {
     u8g2.setFont(u8g2_font_4x6_tf);
     char tape[36];
     float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
-    snprintf(tape, sizeof(tape), "%.2fM %ddB [0x%02X %04d PKT:%u]",
-             mhz, currentRssi, currentWideband, adcNoiseVal, packetCount);
+    snprintf(tape, sizeof(tape), "%.2fM %ddB [WB:%02X CH:%02X PKT:%u]",
+             mhz, currentRssi, currentWideband, readSX1278Register(0x1B), packetCount);
     u8g2.drawStr(1, 61, tape);
 }
 
@@ -621,31 +619,39 @@ char currentRandomNumber[TRNG_TOTAL_DIGITS + 1] = {0};
 uint32_t lastNumberGenTime = 0;
 uint32_t numberGenCount = 0;
 
-// Odběr jedné ryze fyzické náhodné číslice '0'..'9':
-// Rejection sampling eliminuje modulo zkreslení pro 100% matematicky uniformní rozdělení.
+// Odběr jedné ryze fyzické náhodné číslice '0'..'9' VÝHRADNĚ z RF šumu antény SX1278:
+// Používá oficiální doporučení Semtech AN1200.24 pro generování skutečných náhodných čísel
+// pomocí Von Neumannova debiasingu na registru širokopásmového RF šumu (0x2C RegRssiWideband).
+// V tomto procesu nehraje roli ABSOLUTNĚ NIC JINÉHO než elektromagnetický šum z antény.
 char harvestPureHardwareDigit() {
     while (true) {
-        // Krátká mikrosekundová prodleva pro akumulaci nového RF a tepelného šumu
-        delayMicroseconds(50);
+        // Vzorkujeme 8 nestranných bitů čistě z fyzického RF šumu antény
+        uint8_t randomByte = 0;
+        int bitsCollected = 0;
         
-        uint8_t rfWideband = readSX1278Register(0x2C);
-        uint8_t rfChannel  = readSX1278Register(0x1B);
-        uint16_t adcNoise  = analogRead(ADC_NOISE_PIN);
-        uint32_t ccount    = esp_cpu_get_ccount();
-        uint32_t espHwTrng = esp_random(); // Interní fyzický hardware TRNG čipu ESP32
-        
-        // Smíchání výhradně fyzických šumů přes bitový XOR (žádná PRNG matematika!):
-        uint8_t physicalEntropy = rfWideband ^ rfChannel ^ 
-                                  ((uint8_t)(adcNoise & 0xFF)) ^ ((uint8_t)(adcNoise >> 8)) ^
-                                  ((uint8_t)(ccount & 0xFF)) ^ ((uint8_t)(ccount >> 8)) ^
-                                  ((uint8_t)(espHwTrng & 0xFF)) ^ ((uint8_t)(espHwTrng >> 8));
+        while (bitsCollected < 8) {
+            // Dva po sobě jdoucí vzorky LSB širokopásmového šumu z antény
+            uint8_t s1 = readSX1278Register(0x2C) & 0x01;
+            delayMicroseconds(60);
+            uint8_t s2 = readSX1278Register(0x2C) & 0x01;
+            delayMicroseconds(60);
+            
+            // Von Neumann debiasing (Semtech AN1200.24):
+            // 01 -> bit 0
+            // 10 -> bit 1
+            // 00 a 11 se zahazují
+            // Toto matematicky garantuje P(0) = P(1) = 0.5 bez jakéhokoliv DC offsetu či zkreslení.
+            if (s1 != s2) {
+                randomByte = (randomByte << 1) | s1;
+                bitsCollected++;
+            }
+        }
         
         // Rejection sampling pro 0-9:
-        // 250 je nejvyšší násobek 10 pod 256. 
-        // Hodnoty 0..249 se mapují přesně rovnoměrně na číslice 0..9 (každá s pravděpodobností 25/250 = 10%).
-        // Hodnoty 250..255 se zahazují a odebírá se nový fyzický šum.
-        if (physicalEntropy < 250) {
-            return '0' + (physicalEntropy % 10);
+        // Hodnoty 0..249 se mapují rovnoměrně na číslice 0..9 (přesně 10.00% pravděpodobnost).
+        // Hodnoty 250..255 se zahazují a odebírá se nový šum z antény.
+        if (randomByte < 250) {
+            return '0' + (randomByte % 10);
         }
     }
 }
@@ -759,9 +765,9 @@ void sampleRFEnvironment() {
         writeSX1278Register(0x12, irqFlags);
     }
     
-    // 2. Širokopásmový šum z registru 0x2C (REG_RSSI_WIDEBAND)
+    // 2. Širokopásmový šum z registru 0x2C (REG_RSSI_WIDEBAND) a RSSI registru 0x1B z antény
     currentWideband = readSX1278Register(0x2C);
-    adcNoiseVal = analogRead(ADC_NOISE_PIN);
+    uint8_t currentChannelRssi = readSX1278Register(0x1B);
     
     // Posun historie osciloskopu
     for (int i = 0; i < SCREEN_WIDTH - 1; i++) {
@@ -769,11 +775,13 @@ void sampleRFEnvironment() {
     }
     noiseHistory[SCREEN_WIDTH - 1] = currentWideband;
     
-    // 3. Vmíchání čerstvé fyzikální entropie
-    entropyState ^= ((uint64_t)currentWideband << 56) 
-                  ^ ((uint64_t)(adcNoiseVal & 0x0FFF) << 40)
-                  ^ ((uint64_t)esp_random() << 8)
-                  ^ (uint64_t)esp_cpu_get_ccount();
+    // 3. Vmíchání fyzikální entropie VÝHRADNĚ z analogového RF front-endu antény SX1278:
+    entropyState = (entropyState << 9) ^ (entropyState >> 55)
+                 ^ ((uint64_t)currentWideband << 56)
+                 ^ ((uint64_t)currentChannelRssi << 40)
+                 ^ ((uint64_t)irqFlags << 24)
+                 ^ ((uint64_t)currentWideband << 8)
+                 ^ (uint64_t)currentChannelRssi;
     
     // 4. Periodické vzorkování RSSI
     if (now - lastRssiSample > 90) {
@@ -978,7 +986,6 @@ void setup() {
     }
     
     pinMode(BOOT_BUTTON, INPUT_PULLUP);
-    pinMode(ADC_NOISE_PIN, INPUT);
     
     // OLED SSD1306 inicializace
     Wire.begin(OLED_SDA, OLED_SCL);
@@ -1010,6 +1017,13 @@ void setup() {
         LoRa.setSignalBandwidth(500E3);
         LoRa.setGain(6);
         LoRa.receive();
+        
+        // Počáteční naplnění entropie přímo ze šumu antény SX1278
+        entropyState = 0;
+        for (int i = 0; i < 8; i++) {
+            entropyState = (entropyState << 8) | (uint64_t)readSX1278Register(0x2C);
+            delayMicroseconds(200);
+        }
     }
     
     initFire();

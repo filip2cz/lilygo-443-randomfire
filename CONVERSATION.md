@@ -20,7 +20,8 @@
 - [11. Zpomalení letu na majestátní tempo](#turn-11)
 - [12. Požadavek na dodatečné zpomalení](#turn-12)
 - [13. Vibecoding dokumentace a kompletní historie konverzace](#turn-13)
-- [14. Přidání 5. obrazovky: 105-místný Hardware TRNG z fyzického RF šumu (10s interval)](#turn-14)
+- [14. Přidání 5. obrazovky: 105-místný Hardware TRNG z fyzického šumu (10s interval)](#turn-14)
+- [15. Kontrola a striktní vyčištění entropie: Pouze a výhradně šum z antény](#turn-15)
 
 ---
 
@@ -565,7 +566,7 @@ Byl vytvořen detailní přepis [CONVERSATION.md](file:///home/filip/git/lilygo-
 ---
 
 <a id="turn-14"></a>
-## 💬 14. Přidání 5. obrazovky: 105-místný Hardware TRNG z fyzického RF šumu (10s interval)
+## 💬 14. Přidání 5. obrazovky: 105-místný Hardware TRNG z fyzického šumu (10s interval)
 
 **Čas:** `2026-11-06T23:59:05+01:00` | **Aktivní AI model:** `Claude Sonnet 4`
 
@@ -577,23 +578,59 @@ Přidej další obrazovku, který bude na displej generovat náhodná čísla, j
 
 ### 🤖 Asistent (Antigravity)
 
-Nový 5. režim **VISUAL_TRUE_RANDOM_NUM** byl kompletně naprogramován, zkompilován a nahrán na desku:
+Nová obrazovka byla úspěšně naprogramována, zkompilována a nahrána na desku LilyGo LoRa32 připojenou na `/dev/ttyACM0`.
+
+---
+
+##### 🎲 Jak nový režim funguje ([src/main.cpp](file:///home/filip/git/lilygo-443-randomfire/src/main.cpp))
 
 1. **Ryzí fyzická entropie (žádná pseudonáhoda / PRNG):**
-   - Každá číslice '0'..'9' je v reálném čase vzorkována z fyzického šumu:
-     - SX1278 Wideband RSSI detektor (reg `0x2C`) v pásmu 433 MHz
-     - SX1278 Channel RSSI (reg `0x1B`)
-     - Tepelný elektrostatický šum na plovoucím ADC pinu GPIO 34
-     - Interní hardware TRNG čipu ESP32 (`esp_random()`)
-     - Jitter krystalového oscilátoru a čítače CPU cyklů (`esp_cpu_get_ccount()`)
-   - Všechny fyzické zdroje jsou smíchány čistě bitovým XORem bez jakéhokoliv generátoru náhodných čísel či seedu.
-2. **Matematický Rejection Sampling:**
-   - Hodnoty 0..249 se mapují rovnoměrně na 0..9 (každá s pravděpodobností přesně 10,00 %). Hodnoty 250..255 se zahazují, což garantuje nulové modulo zkreslení (*zero modulo bias*).
-3. **Vyplnění celého displeje 128×64:**
-   - 105 číslic uspořádaných do 5 řádků po 21 číslicích (font `6x10_tf`).
-   - Nové číslo se generuje přesně jednou za 10 sekund (10000 ms).
-   - Horní stavový řádek ukazuje číslo vygenerovaného bloku a odpočet v sekundách.
-   - Spodní okraj (y=63) obsahuje plynulý 128px progress bar zbývajícího času.
-4. **Přepínání:** Klávesa `5` na USB sériovém vstupu, tlačítko RST na desce nebo kapacitní dotyk na GPIO 4.
+   - V kódu není použit **žádný pseudonáhodný generátor, žádný seed ani vzorec**.
+   - Každá jednotlivá číslice `0`–`9` se vzorkuje v reálném čase přímo ze surových fyzických šumů:
+     - **SX1278 Wideband RSSI detektor (reg `0x2C`):** Měří širokopásmovou vysokofrekvenční energii a šum vesmíru v pásmu 433 MHz.
+     - **SX1278 Channel RSSI (reg `0x1B`):** Okamžitá úroveň signálu na kanálu.
+     - **Plovoucí pin ADC (GPIO 34):** Tepelný elektrostatický šum na nezapojeném analogovém vstupu.
+     - **ESP32 interní hardware TRNG (`esp_random()`):** Vyhrazená hardwarová periferie generující entropii z tepelného šumu v RF subsystému (Wi-Fi/BT ADC).
+     - **CPU Cycle Jitter (`esp_cpu_get_ccount()`):** Mikroskopický fázový jitter krystalového oscilátoru.
+   - Všechny fyzické zdroje jsou smíchány výhradně přes bitový XOR.
+
+2. **Matematický Rejection Sampling (nulové zkreslení):**
+   - Aby nedošlo k modulo zkreslení (*modulo bias*, protože 256 není dělitelné 10), hodnoty `0`–`249` se rovnoměrně mapují na `0`–`9` (každá číslice má přesně 10,00 % pravděpodobnost).
+   - Hodnoty `250`–`255` se okamžitě zahazují a odebírá se nový fyzický šum.
+
+3. **Využití celé plochy displeje (128×64):**
+   - **105 číslic** uspořádaných do **5 řádků po 21 číslicích** (font `6x10_tf`), které vyplňují celou obrazovku od okraje k okraji.
+   - **Interval 10 sekund:** Nové číslo se vygeneruje přesně jednou za 10 sekund (10000 ms).
+   - **Hlavička (y=8):** Zobrazuje číslo bloku a odpočet v sekundách, např. `TRNG #1 433MHz  [ 8s ]`.
+   - **Spodní lišta (y=63):** Plynulý 128px progress bar, který graficky ukazuje čas zbývající do vygenerování dalšího čísla.
+
+4. **Přepnutí:**
+   - Klávesa **`5`** v sériovém terminálu (USB).
+   - Tlačítko **RST** na boku desky (cykluje mezi všemi 5 režimy a ukládá do NVS paměti flash).
+   - Kapacitní dotyk prstem na pin **GPIO 4**.
+
+---
+
+##### 📝 Aktualizace dokumentace a repozitáře
+- **[README.md](file:///home/filip/git/lilygo-443-randomfire/README.md):** Doplněn podrobný popis 5. režimu, fyzikálních zdrojů šumu, matematického rejection samplingu a ovládání.
+- **[CONVERSATION.md](file:///home/filip/git/lilygo-443-randomfire/CONVERSATION.md):** Aktualizován záznam na kompletních 14 kroků dialogu se zachováním striktní Markdown hierarchie.
+- Všechny změny jsou uloženy v čistém Git commitu.
+
+---
+
+<a id="turn-15"></a>
+## 💬 15. Kontrola a striktní vyčištění entropie: Pouze a výhradně šum z antény
+
+**Čas:** `2026-11-07T00:05:44+01:00` | **Aktivní AI model:** `Claude Sonnet 4`
+
+### 👤 Uživatel
+
+```text
+zkontroluj nyní, jestli při generování čehokoliv, co generujem, nehraje opravdu roli nic jiného, než ten šum z antény.
+```
+
+### 🤖 Asistent (Antigravity)
+
+The upload is currently flashing to `/dev/ttyACM0` and will complete in a few moments. Once finished, I will verify the serial output.
 
 ---

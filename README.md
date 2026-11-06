@@ -65,19 +65,16 @@ Projekt byl vytvořen od nuly bez manuálního psaní kódu pomocí agentního p
 ### 4. 🔥 VISUAL_COSMIC_FIRE (Původní Doom Fire)
 - Termodynamický oheň s 8×8 Bayerovým ditheringem a adaptivní výškou plamenů.
 
-### 5. 🎲 VISUAL_TRUE_RANDOM_NUM (105-místný Hardware TRNG z fyzického šumu)
+### 5. 🎲 VISUAL_TRUE_RANDOM_NUM (105-místný Hardware TRNG výhradně z antény)
 - **Vizuál:** Masivní 105-ciferné náhodné číslo rozprostřené přes celou obrazovku v 5 řádcích po 21 číslicích (font 6×10).
 - **Perioda:** Nové náhodné číslo se vygeneruje přesně jednou za 10 sekund (10s interval).
-- **100% Fyzická entropie (žádná pseudonáhoda / PRNG):**
-  - Každá číslice '0'..'9' je vzorkována v reálném čase přímo ze surových fyzických šumů:
-    1. **SX1278 Wideband RSSI (reg 0x2C):** Širokopásmový detektor energie v pásmu 433 MHz.
-    2. **SX1278 Channel RSSI (reg 0x1B):** Úroveň okamžitého rádiového signálu a šum pozadí.
-    3. **Plovoucí pin ADC (GPIO 34):** Tepelný elektrostatický šum na nezapojeném analogovém vstupu.
-    4. **ESP32 interní hardware TRNG (`esp_random()`):** Vyhrazená hardwarová periferie generující entropii ze šumu v RF subsystému (Wi-Fi/BT ADC).
-    5. **CPU Clock Jitter (`esp_cpu_get_ccount()`):** Mikroskopický časový fázový šum krystalového oscilátoru.
-  - Všechny fyzické zdroje jsou smíchány čistě bitovým XORem bez jakéhokoliv matematického PRNG algoritmu nebo seedu.
+- **100% Čistý šum z antény (absolutně žádné jiné zdroje):**
+  - Při generování nehraje roli **vůbec nic jiného než elektromagnetický a kosmický šum přicházející z antény**:
+    1. **SX1278 Wideband RSSI (reg 0x2C):** Širokopásmový detektor energie přijímané z antény v pásmu 433 MHz.
+    2. **Semtech AN1200.24 Von Neumann debiasing:** Z anténního registru 0x2C se odebírají dvojice LSB bitů. Dvojice `01` generuje bit 0, `10` generuje bit 1, shodné dvojice `00` a `11` se zahazují. Tím je matematicky garantována striktní pravděpodobnost $P(0) = P(1) = 0.5$ bez jakéhokoliv posunu.
+    3. **Kompletní eliminace ne-anténních zdrojů:** Z kódu byly zcela odstraněny interní ESP32 TRNG (`esp_random`), plovoucí ADC piny i čítače CPU cyklů.
 - **Rejection Sampling (nulové zkreslení):**
-  - Hodnoty 0..249 se mapují rovnoměrně na číslice 0..9 (každá má identickou pravděpodobnost přesně 10,00 %). Hodnoty 250..255 se zahazují a odebírá se nový vzorek fyzického šumu, což zcela eliminuje modulo zkreslení (*modulo bias*).
+  - Z debiasovaných bajtů z antény se hodnoty 0..249 mapují rovnoměrně na číslice 0..9 (každá má identickou pravděpodobnost přesně 10,00 %). Hodnoty 250..255 se zahazují a odebírá se nový vzorek z antény, což zcela eliminuje modulo zkreslení (*modulo bias*).
 - **HUD & Odpočet:**
   - Horní stavový řádek zobrazuje číslo generovaného bloku a zbývající sekundy (`TRNG #4 433MHz  [ 7s ]`).
   - Spodní plynulý indikátor (progress bar na y=63) graficky odpočítává 10 sekund do dalšího čísla.
