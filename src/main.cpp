@@ -26,17 +26,19 @@
 // HLAVNÍ REŽIM VIZUALIZACE (Lze nastavit zde nebo přepínat tlačítkem RST / Touch / Serial)
 //   0 = VISUAL_TESLA_LIGHTNING (Elektrická plazma / Tesla blesky)
 //   1 = VISUAL_CYBER_SPECTRUM  (Cyberpunk RF spektrální analyzátor & osciloskop)
-//   2 = VISUAL_COSMIC_FIRE     (Původní kosmický oheň - Doom Fire)
+//   2 = VISUAL_STARFIELD_WARP  (3D Průlet hvězdami / Warp Speed Flight)
+//   3 = VISUAL_COSMIC_FIRE     (Původní kosmický oheň - Doom Fire)
 // =============================================================================
 enum VisualMode {
     VISUAL_TESLA_LIGHTNING = 0,
     VISUAL_CYBER_SPECTRUM  = 1,
-    VISUAL_COSMIC_FIRE     = 2,
-    VISUAL_COUNT           = 3
+    VISUAL_STARFIELD_WARP  = 2,
+    VISUAL_COSMIC_FIRE     = 3,
+    VISUAL_COUNT           = 4
 };
 
 // Nastavte výchozí režim zde:
-VisualMode activeVisualMode = VISUAL_TESLA_LIGHTNING;
+VisualMode activeVisualMode = VISUAL_STARFIELD_WARP;
 
 // Automatické střídání režimů (v sekundách, 0 = vypnuto)
 // Pokud je nastaveno např. 20, režimy se po 20s samy střídají jako galerie!
@@ -140,6 +142,16 @@ float channelPeak[NUM_CHANNELS] = {0};
 
 // Historie pro osciloskop (128 vzorků)
 uint8_t noiseHistory[SCREEN_WIDTH];
+
+// 3D Hvězdné pole pro režim průletu hvězdami (Warp Speed)
+#define NUM_STARS 72
+struct Star3D {
+    float x;
+    float y;
+    float z;
+    float pz;
+};
+Star3D stars[NUM_STARS];
 
 // Buffer pro oheň (128x64)
 uint8_t heat[SCREEN_HEIGHT][SCREEN_WIDTH];
@@ -397,7 +409,96 @@ void renderCyberSpectrum() {
 }
 
 // =============================================================================
-// REŽIM 3: 🔥 PŮVODNÍ KOSMICKÝ OHEŇ (DOOM FIRE ENGINE)
+// REŽIM 3: 🌌 3D PRŮLET HVĚZDAMI (WARP SPEED STARFIELD)
+// =============================================================================
+void initStarfield() {
+    for (int i = 0; i < NUM_STARS; i++) {
+        stars[i].x = ((float)harvestEntropyByte() - 128.0f) * 1.6f;
+        stars[i].y = ((float)harvestEntropyByte() - 128.0f) * 0.9f;
+        stars[i].z = (float)(harvestEntropyByte() % 90 + 10);
+        stars[i].pz = stars[i].z;
+    }
+}
+
+void renderStarfieldWarp() {
+    u8g2.clearBuffer();
+    
+    // Rychlost letu (Warp factor) přímo řízená okamžitou energií z antény:
+    // Klid (0.1) -> 1.2c (plynulý majestátní let hlubokým vesmírem)
+    // Silné rušení (0.7) -> 6.5c (hvězdy se natahují do paprsků)
+    // Detekce paketu / špička -> 14.0c (masivní skok do hyperprostoru!)
+    float warpSpeed = 1.0f + smoothedEnergy * 7.5f;
+    if (burstFramesLeft > 0) {
+        warpSpeed = 14.0f;
+    }
+    
+    // Úběžník se mírně naklání podle směru kosmického větru
+    int cx = 64 + cosmicWind * 8;
+    int cy = 36;
+    
+    // 1. Vykreslení hvězd a světelných paprsků
+    for (int i = 0; i < NUM_STARS; i++) {
+        stars[i].pz = stars[i].z;
+        stars[i].z -= warpSpeed;
+        
+        // Pokud hvězda minula kameru, znovuzrodit vzadu s novou entropií
+        if (stars[i].z <= 1.0f) {
+            stars[i].x = ((float)harvestEntropyByte() - 128.0f) * 1.6f;
+            stars[i].y = ((float)harvestEntropyByte() - 128.0f) * 0.9f;
+            stars[i].z = 100.0f;
+            stars[i].pz = 100.0f;
+            continue;
+        }
+        
+        // 3D perspektivní projekce na 2D displej
+        int px = cx + (int)((stars[i].x / stars[i].pz) * 58.0f);
+        int py = cy + (int)((stars[i].y / stars[i].pz) * 58.0f);
+        int sx = cx + (int)((stars[i].x / stars[i].z) * 58.0f);
+        int sy = cy + (int)((stars[i].y / stars[i].z) * 58.0f);
+        
+        if (sx < 0 || sx >= SCREEN_WIDTH || sy < 10 || sy >= SCREEN_HEIGHT) {
+            stars[i].z = 0.0f; // Reset v dalším cyklu
+            continue;
+        }
+        
+        // Při vyšších rychlostech natáhnout do světelných paprsků (Warp streaks)
+        if (warpSpeed > 2.2f && (px != sx || py != sy)) {
+            u8g2.drawLine(px, constrain(py, 10, 63), sx, constrain(sy, 10, 63));
+        } else {
+            u8g2.drawPixel(sx, sy);
+            // Zářící hvězdy blízko kamery
+            if (stars[i].z < 26.0f && warpSpeed < 5.0f) {
+                u8g2.drawPixel(sx + 1, sy);
+                u8g2.drawPixel(sx, sy + 1);
+            }
+        }
+    }
+    
+    // 2. Zaměřovací středový kříž v úběžníku
+    u8g2.drawPixel(cx - 3, cy);
+    u8g2.drawPixel(cx + 3, cy);
+    u8g2.drawPixel(cx, cy - 3);
+    u8g2.drawPixel(cx, cy + 3);
+    
+    // 3. Sci-Fi navigační telemetrie nahoře
+    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.setDrawColor(1);
+    char str[32];
+    float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
+    snprintf(str, sizeof(str), "WARP %.2fM", mhz);
+    u8g2.drawStr(1, 7, str);
+    
+    snprintf(str, sizeof(str), "%ddB", currentRssi);
+    u8g2.drawStr(68, 7, str);
+    
+    snprintf(str, sizeof(str), "%.1fc", warpSpeed);
+    u8g2.drawStr(100, 7, str);
+    
+    u8g2.drawHLine(0, 9, 128);
+}
+
+// =============================================================================
+// REŽIM 4: 🔥 PŮVODNÍ KOSMICKÝ OHEŇ (DOOM FIRE ENGINE)
 // =============================================================================
 void initFire() {
     memset(heat, 0, sizeof(heat));
@@ -525,6 +626,10 @@ void drawModeBanner() {
             u8g2.drawStr(24, 29, "CYBER SPECTRUM");
             u8g2.setFont(u8g2_font_4x6_tf);
             u8g2.drawStr(32, 40, "RF ANALYZER & SCOPE");
+        } else if (activeVisualMode == VISUAL_STARFIELD_WARP) {
+            u8g2.drawStr(20, 29, "COSMIC STARFIELD");
+            u8g2.setFont(u8g2_font_4x6_tf);
+            u8g2.drawStr(32, 40, "3D WARP SPEED FLIGHT");
         } else if (activeVisualMode == VISUAL_COSMIC_FIRE) {
             u8g2.drawStr(30, 29, "COSMIC FIRE");
             u8g2.setFont(u8g2_font_4x6_tf);
@@ -622,7 +727,8 @@ void setVisualMode(VisualMode newMode) {
     Serial.printf("\n[REŽIM PŘEPNUT] -> %d (%s)\n",
                   (int)activeVisualMode,
                   activeVisualMode == VISUAL_TESLA_LIGHTNING ? "TESLA LIGHTNING" :
-                  activeVisualMode == VISUAL_CYBER_SPECTRUM  ? "CYBER SPECTRUM" : "COSMIC FIRE");
+                  activeVisualMode == VISUAL_CYBER_SPECTRUM  ? "CYBER SPECTRUM" :
+                  activeVisualMode == VISUAL_STARFIELD_WARP  ? "COSMIC STARFIELD" : "COSMIC FIRE");
 }
 
 void nextVisualMode() {
@@ -649,6 +755,8 @@ void handleSerialCommands() {
         } else if (c == '2') {
             setVisualMode(VISUAL_CYBER_SPECTRUM);
         } else if (c == '3') {
+            setVisualMode(VISUAL_STARFIELD_WARP);
+        } else if (c == '4') {
             setVisualMode(VISUAL_COSMIC_FIRE);
         } else if (c == ' ' || c == 'm' || c == 'M' || c == 'n' || c == 'N') {
             nextVisualMode();
@@ -796,6 +904,7 @@ void setup() {
     
     initFire();
     initSparks();
+    initStarfield();
     delay(400);
 }
 
@@ -823,6 +932,10 @@ void loop() {
             
         case VISUAL_CYBER_SPECTRUM:
             renderCyberSpectrum();
+            break;
+            
+        case VISUAL_STARFIELD_WARP:
+            renderStarfieldWarp();
             break;
             
         case VISUAL_COSMIC_FIRE:
