@@ -1,8 +1,44 @@
 # Cosmic Random Interference Visualizer — LilyGo LoRa32 T3_V1.6.1 (433 MHz)
 
+> 🚀 **Tento projekt je 100% VIBECODED!**  
+> Veškerý kód, architektura, návrh algoritmů, řešení hardwarových záludností ESP32, optimalizace na 50 FPS i nahrávání firmwaru vznikly výhradně formou dialogu v přirozeném jazyce mezi vývojářem a autonomním AI agentem. Uživatel nenapsal ani řádek kódu ručně.  
+> 📜 **Kompletní a nestříhaný přepis naší konverzace najdete v [CONVERSATION.md](CONVERSATION.md).**
+
+---
+
 Program pro desku **LilyGo LoRa32 T3_V1.6.1 (433MHz)**, který snímá náhodné rušení z okolního elektromagnetického prostředí, kosmický šum a rádiové signály v pásmu 433 MHz pomocí transceiveru SX1278 a ESP32 hardware TRNG/ADC.
 
 Na OLED displeji SSD1306 (128×64) nabízí **4 přepínatelné vizualizační režimy**.
+
+---
+
+## 🤖 Vibecoding & Použité AI nástroje a modely
+
+Projekt byl vytvořen od nuly bez manuálního psaní kódu pomocí agentního párového programování:
+
+### 🛠️ AI Vývojová platforma
+- **Google DeepMind Antigravity** — pokročilé agentní vývojové prostředí s přímým přístupem k NixOS terminálu, kompilaci PlatformIO, ladění I/O a USB flashování desky (`/dev/ttyACM0`).
+
+### 🧠 Použité AI modely během vývoje
+1. **Gemini 3.8 Flash (High)** (`gemini-3.8-flash-high` / `gemini-3.8-flash-n`):
+   - Architektura projektu, konfigurace `platformio.ini` a `shell.nix` pro NixOS.
+   - Rešerše pinoutu čipu ESP32-PICO-D4 a vyřešení fatálního pádu Watchdogu (`TG1WDT_SYS_RESET`) způsobeného kolizí interní SPI flash paměti na GPIO 16 s resetovacím pinem OLED.
+   - Nízkoúrovňová komunikace s transceiverem SX1278 přes přímé SPI registry (vynechání privátních metod knihovny `LoRa`).
+   - Implementace původního Doom ohně s 8×8 Bayerovým ditheringem.
+   - Odhalení a oprava aritmetického podtečení náhodného jitteru (`uint8_t`), které způsobovalo divoké blikání displeje.
+   - Návrh a implementace režimů **⚡ Tesla blesky** a **📡 Cyberpunk analyzátor**.
+   - Vyřešení absence fyzického tlačítka BOOT (implementace přepínání přes softwarovou detekci stisku tlačítka RST `ESP_RST_EXT`, kapacitní dotyk na GPIO 4 a USB sériové příkazy).
+   - Trvalé vypnutí rušivě blikající zelené indikační LED na GPIO 25.
+2. **Claude Opus 4.6 (Thinking)** (`claude-opus-4-6-thinking`):
+   - Matematická rekalibrace výšky plamene ohně tak, aby odpovídala reálné úrovni elektromagnetického šumu v místnosti.
+   - Návrh a odladění filtru exponenciálního klouzavého průměru (EMA) pro vyhlazení okamžitého RSSI a wideband registru.
+   - Zvýšení plynulosti a ladění telemetrického reportování.
+3. **Claude Sonnet 4.6 (Thinking)** (`claude-sonnet-4-6-thinking`):
+   - Návrh a implementace 4. režimu: **🌌 3D Starfield Warp Speed let** s plnou 3D perspektivní projekcí 72 hvězd.
+   - Algoritmus pro znovuzrozování hvězd v hloubce vesmíru s novou RF entropií a natahování do světelných laserových paprsků (*warp streaks*).
+   - Ladění a postupné zpomalení letu na uklidňující, majestátní kosmický drift.
+
+👉 **Úplný záznam průběhu vývoje, ladicích kroků a promptů si můžete přečíst v souboru [CONVERSATION.md](CONVERSATION.md).**
 
 ---
 
@@ -11,11 +47,11 @@ Na OLED displeji SSD1306 (128×64) nabízí **4 přepínatelné vizualizační r
 ### 1. 🌌 VISUAL_STARFIELD_WARP (3D Průlet hvězdami / Warp Speed Flight)
 - **Vizuál:** 72 trojrozměrných hvězd s plnou 3D perspektivní projekcí proudících z hloubi vesmíru přímo proti vám.
 - **Warp efekt:** 
-  - Při klidném éteru majestátní a pomalý průlet hlubokým vesmírem rychlostí ~0.4c–0.6c (blízké hvězdy jemně září a plynule proplouvají).
-  - Při vyšším rušení rychlost citlivě akceleruje k 1.2c–1.5c a hvězdy se natahují do světelných laserových paprsků (Warp streaks).
-  - Při silném RF impulsu / detekci paketu proběhne **krátký záblesk skoku do hyperprostoru** (~3.8c).
+  - Při klidném éteru majestátní a pomalý průlet hlubokým vesmírem rychlostí ~0.10c–0.20c (hvězdy klidně a plynule proplouvají prostorem).
+  - Při vyšším rušení rychlost citlivě akceleruje k 0.5c–0.7c a hvězdy se natahují do světelných laserových paprsků (Warp streaks).
+  - Při silném RF impulsu / detekci paketu proběhne **krátký svižný skok do hyperprostoru** (~1.8c).
 - **Řízení kurzu:** Kosmický vítr a frekvenční gradient naklánějí úběžník letu (Yaw/Pitch).
-- **HUD:** `WARP 433.92M -74dB 0.5c` s jemným středovým zaměřovačem.
+- **HUD:** `WARP 433.92M -74dB 0.1c` s jemným středovým zaměřovačem.
 
 ### 2. ⚡ VISUAL_TESLA_LIGHTNING (Elektrická plazma / Blesková bouře)
 - **Vizuál:** Ze spodní cívky/elektrody šlehají do tmy procedurální rozvětvené blesky a létají z nich plazmové částice.

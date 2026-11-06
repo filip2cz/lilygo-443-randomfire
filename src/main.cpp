@@ -422,13 +422,13 @@ void initStarfield() {
 void renderStarfieldWarp() {
     u8g2.clearBuffer();
     
-    // Pomalá, plynulá a majestátní rychlost letu řízená rušením:
-    // Klid v místnosti (E ~ 0.2): ~0.45c až 0.6c (klidný, pohlcující průlet)
-    // Vyšší rušení (E ~ 0.7): ~1.3c až 1.5c (hvězdy zrychlí a natahují se do paprsků)
-    // Detekce paketu / RF špička: ~3.8c (krátký záblesk hyperprostoru)
-    float warpSpeed = 0.22f + smoothedEnergy * 1.40f;
+    // Extra pomalá, majestátní a uklidňující rychlost letu řízená rušením:
+    // Klid v místnosti (E ~ 0.2): ~0.10c až 0.20c (velmi pomalý hluboký drift hvězd)
+    // Vyšší rušení (E ~ 0.7): ~0.45c až 0.60c (hvězdy zrychlí a při >0.5c tvoří jemné paprsky)
+    // Detekce paketu / RF špička: ~1.8c (krátký svižný warp skok)
+    float warpSpeed = 0.06f + smoothedEnergy * 0.45f;
     if (burstFramesLeft > 0) {
-        warpSpeed = 3.8f;
+        warpSpeed = 1.8f;
     }
     
     // Úběžník se mírně naklání podle směru kosmického větru
@@ -461,12 +461,12 @@ void renderStarfieldWarp() {
         }
         
         // Při zrychlení natáhnout do světelných paprsků (Warp streaks)
-        if (warpSpeed > 0.95f && (px != sx || py != sy)) {
+        if (warpSpeed > 0.40f && (px != sx || py != sy)) {
             u8g2.drawLine(px, constrain(py, 10, 63), sx, constrain(sy, 10, 63));
         } else {
             u8g2.drawPixel(sx, sy);
             // Zářící hvězdy blízko kamery
-            if (stars[i].z < 28.0f && warpSpeed < 1.2f) {
+            if (stars[i].z < 28.0f && warpSpeed < 0.50f) {
                 u8g2.drawPixel(sx + 1, sy);
                 u8g2.drawPixel(sx, sy + 1);
             }
