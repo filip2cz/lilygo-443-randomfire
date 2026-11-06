@@ -40,7 +40,7 @@ VisualMode activeVisualMode = VISUAL_TESLA_LIGHTNING;
 
 // Automatické střídání režimů (v sekundách, 0 = vypnuto)
 // Pokud je nastaveno např. 20, režimy se po 20s samy střídají jako galerie!
-uint32_t autoCycleIntervalSeconds = 20;
+uint32_t autoCycleIntervalSeconds = 0;
 bool autoCycleEnabled = true;
 
 // Řízení stavové LED diody (false = trvale zhasnutá, žádné rušivé blikání)
