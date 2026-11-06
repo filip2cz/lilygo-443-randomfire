@@ -20,9 +20,10 @@
 #include <LoRa.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <Preferences.h>
 
 // =============================================================================
-// HLAVNÍ REŽIM VIZUALIZACE (Lze nastavit zde nebo přepínat tlačítkem BOOT)
+// HLAVNÍ REŽIM VIZUALIZACE (Lze nastavit zde nebo přepínat tlačítkem RST / Touch / Serial)
 //   0 = VISUAL_TESLA_LIGHTNING (Elektrická plazma / Tesla blesky)
 //   1 = VISUAL_CYBER_SPECTRUM  (Cyberpunk RF spektrální analyzátor & osciloskop)
 //   2 = VISUAL_COSMIC_FIRE     (Původní kosmický oheň - Doom Fire)
@@ -36,6 +37,15 @@ enum VisualMode {
 
 // Nastavte výchozí režim zde:
 VisualMode activeVisualMode = VISUAL_TESLA_LIGHTNING;
+
+// Automatické střídání režimů (v sekundách, 0 = vypnuto)
+// Pokud je nastaveno např. 20, režimy se po 20s samy střídají jako galerie!
+uint32_t autoCycleIntervalSeconds = 20;
+bool autoCycleEnabled = true;
+
+// Persistence do flash paměti (Preferences) a RTC RAM
+Preferences prefs;
+RTC_DATA_ATTR int rtcSavedMode = -1;
 
 // =============================================================================
 // HARDWARE PIN DEFINITIONS (LilyGo LoRa32 T3 V1.6.1)
@@ -598,8 +608,72 @@ void sampleRFEnvironment() {
 }
 
 // =============================================================================
-// USER INTERACTION (BOOT BUTTON)
+// REŽIMOVÉ PŘEPÍNÁNÍ (RST tlačítko, Touch pin GPIO 4, Serial, Auto-Cycle)
 // =============================================================================
+void setVisualMode(VisualMode newMode) {
+    activeVisualMode = newMode;
+    rtcSavedMode = (int)activeVisualMode;
+    prefs.putInt("mode", (int)activeVisualMode);
+    modeBannerTimer = millis() + 1600; // Zobrazit banner na 1.6s
+    burstFramesLeft = 8;
+    Serial.printf("\n[REŽIM PŘEPNUT] -> %d (%s)\n",
+                  (int)activeVisualMode,
+                  activeVisualMode == VISUAL_TESLA_LIGHTNING ? "TESLA LIGHTNING" :
+                  activeVisualMode == VISUAL_CYBER_SPECTRUM  ? "CYBER SPECTRUM" : "COSMIC FIRE");
+}
+
+void nextVisualMode() {
+    setVisualMode((VisualMode)((activeVisualMode + 1) % VISUAL_COUNT));
+}
+
+// 1. Automatické střídání režimů (Carousel)
+void handleAutoCycle() {
+    static uint32_t lastCycleTime = 0;
+    if (autoCycleEnabled && autoCycleIntervalSeconds > 0) {
+        if (millis() - lastCycleTime >= autoCycleIntervalSeconds * 1000) {
+            lastCycleTime = millis();
+            nextVisualMode();
+        }
+    }
+}
+
+// 2. Sériový vstup z terminálu (klávesnice přes USB)
+void handleSerialCommands() {
+    while (Serial.available()) {
+        char c = Serial.read();
+        if (c == '1') {
+            setVisualMode(VISUAL_TESLA_LIGHTNING);
+        } else if (c == '2') {
+            setVisualMode(VISUAL_CYBER_SPECTRUM);
+        } else if (c == '3') {
+            setVisualMode(VISUAL_COSMIC_FIRE);
+        } else if (c == ' ' || c == 'm' || c == 'M' || c == 'n' || c == 'N') {
+            nextVisualMode();
+        } else if (c == 'a' || c == 'A') {
+            autoCycleEnabled = !autoCycleEnabled;
+            Serial.printf("[AUTO-CYCLE] %s\n", autoCycleEnabled ? "ZAPNUTO" : "VYPNUTO");
+        }
+    }
+}
+
+// 3. Kapacitní dotyk na pin GPIO 4 (header pin na kraji desky)
+void handleCapacitiveTouch() {
+    static uint32_t lastTouchCheck = 0;
+    static uint32_t lastTouchTrigger = 0;
+    uint32_t now = millis();
+    
+    if (now - lastTouchCheck > 40) {
+        lastTouchCheck = now;
+        uint16_t touchVal = touchRead(4); // Pin T0 / GPIO 4
+        // Hodnota při volném pinu bývá ~70-90, při dotyku prstem klesne pod 35
+        if (touchVal < 32 && (now - lastTouchTrigger > 600)) {
+            lastTouchTrigger = now;
+            nextVisualMode();
+        }
+    }
+}
+
+// 4. BOOT tlačítko (pokud je na dané revizi osazeno na GPIO 0)
 void handleButton() {
     static bool lastBtnState = HIGH;
     static uint32_t lastDebounceTime = 0;
@@ -609,10 +683,7 @@ void handleButton() {
         lastDebounceTime = millis();
         lastBtnState = reading;
         if (reading == LOW) {
-            // Přepnutí režimu
-            activeVisualMode = (VisualMode)((activeVisualMode + 1) % VISUAL_COUNT);
-            modeBannerTimer = millis() + 1400; // Zobrazit banner na 1.4 sekundy
-            burstFramesLeft = 6;
+            nextVisualMode();
         }
     }
 }
@@ -649,7 +720,27 @@ void setup() {
     Serial.println("║    COSMIC RANDOM INTERFERENCE VISUALIZER        ║");
     Serial.println("║       LilyGo LoRa32 T3 V1.6.1 - 433 MHz         ║");
     Serial.println("║  [1] Tesla Arc  [2] Cyber Spectrum  [3] Fire    ║");
+    Serial.println("║  Ovládání: RST tlačítko, Touch GPIO 4, Serial   ║");
     Serial.println("╚═════════════════════════════════════════════════╝");
+    
+    // 1. Správa režimů a detekce tlačítka RST
+    prefs.begin("visuals", false);
+    esp_reset_reason_t reason = esp_reset_reason();
+    
+    if (reason == ESP_RST_EXT) {
+        // Uživatel stiskl fyzické tlačítko RST na boku desky!
+        int prevMode = prefs.getInt("mode", 0);
+        int nextMode = (prevMode + 1) % VISUAL_COUNT;
+        prefs.putInt("mode", nextMode);
+        activeVisualMode = (VisualMode)nextMode;
+        modeBannerTimer = millis() + 2500;
+        Serial.printf("[RST TLAČÍTKO] Přepnuto na režim: %d\n", nextMode);
+    } else {
+        // Běžné zapnutí / zapojení USB: načíst uložený režim
+        int savedMode = prefs.getInt("mode", (int)activeVisualMode);
+        activeVisualMode = (VisualMode)savedMode;
+        modeBannerTimer = millis() + 1500;
+    }
     
     ledcSetup(0, 5000, 8);
     ledcAttachPin(BOARD_LED, 0);
@@ -692,7 +783,7 @@ void setup() {
     
     initFire();
     initSparks();
-    delay(500);
+    delay(400);
 }
 
 // =============================================================================
@@ -705,7 +796,10 @@ void loop() {
     // 1. Sběr rádiového a kosmického šumu
     sampleRFEnvironment();
     
-    // 2. Obsluha tlačítka BOOT (přepínání režimů)
+    // 2. Obsluha přepínání: Automatický kolotoč, Sériová linka, Dotyk, Tlačítko
+    handleAutoCycle();
+    handleSerialCommands();
+    handleCapacitiveTouch();
     handleButton();
     
     // 3. Vykreslení podle aktivního vizuálního režimu
@@ -741,12 +835,13 @@ void loop() {
         fps = (float)frameCount * 1000.0f / (float)(now - lastFpsCalc);
         frameCount = 0;
         lastFpsCalc = now;
-        Serial.printf("[COSMIC] FPS: %.1f | Freq: %.2f MHz | RSSI: %d dBm | WB: 0x%02X | Energy: %.0f%% | Mode: %d\n",
+        Serial.printf("[COSMIC] FPS: %.1f | Freq: %.2f MHz | RSSI: %d dBm | WB: 0x%02X | Energy: %.0f%% | Mode: %d | Auto: %s\n",
                       fps,
                       (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f,
                       currentRssi,
                       currentWideband,
                       smoothedEnergy * 100.0f,
-                      (int)activeVisualMode);
+                      (int)activeVisualMode,
+                      autoCycleEnabled ? "ON" : "OFF");
     }
 }
