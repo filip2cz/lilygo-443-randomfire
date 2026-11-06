@@ -8,7 +8,7 @@
 
 Program pro desku **LilyGo LoRa32 T3_V1.6.1 (433MHz)**, který snímá náhodné rušení z okolního elektromagnetického prostředí, kosmický šum a rádiové signály v pásmu 433 MHz pomocí transceiveru SX1278 a ESP32 hardware TRNG/ADC.
 
-Na OLED displeji SSD1306 (128×64) nabízí **4 přepínatelné vizualizační režimy**.
+Na OLED displeji SSD1306 (128×64) nabízí **5 přepínatelných vizualizačních režimů**.
 
 ---
 
@@ -42,7 +42,7 @@ Projekt byl vytvořen od nuly bez manuálního psaní kódu pomocí agentního p
 
 ---
 
-## 🎮 4 Režimy vizualizace
+## 🎮 5 Režimů vizualizace
 
 ### 1. 🌌 VISUAL_STARFIELD_WARP (3D Průlet hvězdami / Warp Speed Flight)
 - **Vizuál:** 72 trojrozměrných hvězd s plnou 3D perspektivní projekcí proudících z hloubi vesmíru přímo proti vám.
@@ -65,6 +65,23 @@ Projekt byl vytvořen od nuly bez manuálního psaní kódu pomocí agentního p
 ### 4. 🔥 VISUAL_COSMIC_FIRE (Původní Doom Fire)
 - Termodynamický oheň s 8×8 Bayerovým ditheringem a adaptivní výškou plamenů.
 
+### 5. 🎲 VISUAL_TRUE_RANDOM_NUM (105-místný Hardware TRNG z fyzického šumu)
+- **Vizuál:** Masivní 105-ciferné náhodné číslo rozprostřené přes celou obrazovku v 5 řádcích po 21 číslicích (font 6×10).
+- **Perioda:** Nové náhodné číslo se vygeneruje přesně jednou za 10 sekund (10s interval).
+- **100% Fyzická entropie (žádná pseudonáhoda / PRNG):**
+  - Každá číslice '0'..'9' je vzorkována v reálném čase přímo ze surových fyzických šumů:
+    1. **SX1278 Wideband RSSI (reg 0x2C):** Širokopásmový detektor energie v pásmu 433 MHz.
+    2. **SX1278 Channel RSSI (reg 0x1B):** Úroveň okamžitého rádiového signálu a šum pozadí.
+    3. **Plovoucí pin ADC (GPIO 34):** Tepelný elektrostatický šum na nezapojeném analogovém vstupu.
+    4. **ESP32 interní hardware TRNG (`esp_random()`):** Vyhrazená hardwarová periferie generující entropii ze šumu v RF subsystému (Wi-Fi/BT ADC).
+    5. **CPU Clock Jitter (`esp_cpu_get_ccount()`):** Mikroskopický časový fázový šum krystalového oscilátoru.
+  - Všechny fyzické zdroje jsou smíchány čistě bitovým XORem bez jakéhokoliv matematického PRNG algoritmu nebo seedu.
+- **Rejection Sampling (nulové zkreslení):**
+  - Hodnoty 0..249 se mapují rovnoměrně na číslice 0..9 (každá má identickou pravděpodobnost přesně 10,00 %). Hodnoty 250..255 se zahazují a odebírá se nový vzorek fyzického šumu, což zcela eliminuje modulo zkreslení (*modulo bias*).
+- **HUD & Odpočet:**
+  - Horní stavový řádek zobrazuje číslo generovaného bloku a zbývající sekundy (`TRNG #4 433MHz  [ 7s ]`).
+  - Spodní plynulý indikátor (progress bar na y=63) graficky odpočítává 10 sekund do dalšího čísla.
+
 ---
 
 ## 🕹️ Přepínání režimů
@@ -72,4 +89,4 @@ Projekt byl vytvořen od nuly bez manuálního psaní kódu pomocí agentního p
 1. **Tlačítkem RST na boku desky:** Jedním stiskem tlačítka RST se deska restartuje a ihned přeskočí na následující režim (uloží se i do paměti flash).
 2. **Automatický kolotoč (Auto-Cycle):** Režimy se samy plynule střídají každých 20 sekund jako živá galerie.
 3. **Kapacitním dotykem:** Dotkněte se prstem pinu **GPIO 4** na liště desky.
-4. **Sériovým monitorem přes USB:** Klávesy `1`, `2`, `3`, `4`, `Mezerník` nebo `A` (vypnutí/zapnutí kolotoče).
+4. **Sériovým monitorem přes USB:** Klávesy `1`, `2`, `3`, `4`, `5`, `Mezerník` nebo `A` (vypnutí/zapnutí kolotoče).

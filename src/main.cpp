@@ -28,17 +28,19 @@
 //   1 = VISUAL_CYBER_SPECTRUM  (Cyberpunk RF spektrální analyzátor & osciloskop)
 //   2 = VISUAL_STARFIELD_WARP  (3D Průlet hvězdami / Warp Speed Flight)
 //   3 = VISUAL_COSMIC_FIRE     (Původní kosmický oheň - Doom Fire)
+//   4 = VISUAL_TRUE_RANDOM_NUM (105-místná ryze náhodná čísla z RF šumu, 10s interval)
 // =============================================================================
 enum VisualMode {
     VISUAL_TESLA_LIGHTNING = 0,
     VISUAL_CYBER_SPECTRUM  = 1,
     VISUAL_STARFIELD_WARP  = 2,
     VISUAL_COSMIC_FIRE     = 3,
-    VISUAL_COUNT           = 4
+    VISUAL_TRUE_RANDOM_NUM = 4,
+    VISUAL_COUNT           = 5
 };
 
 // Nastavte výchozí režim zde:
-VisualMode activeVisualMode = VISUAL_STARFIELD_WARP;
+VisualMode activeVisualMode = VISUAL_TRUE_RANDOM_NUM;
 
 // Automatické střídání režimů (v sekundách, 0 = vypnuto - zůstane trvale zvolený režim)
 uint32_t autoCycleIntervalSeconds = 0;
@@ -605,6 +607,106 @@ void drawFireHUD() {
 }
 
 // =============================================================================
+// REŽIM 5: 🎲 RYZE FYZICKÝ HARDWARE TRNG (105 NÁHODNÝCH ČÍSLIC KAŽDÝCH 10s)
+// Žádná pseudonáhoda, žádný generátor (PRNG), žádný seed.
+// Čísla vznikají výhradně z fyzického RF šumu čipu SX1278 (wideband reg 0x2C),
+// okamžitého signálu (reg 0x1B), tepelného šumu plovoucího ADC pinu 34,
+// hardwarového TRNG čipu ESP32 a mikroskopického časového jitteru CPU cyklů.
+// =============================================================================
+#define TRNG_DIGITS_PER_LINE 21
+#define TRNG_LINES           5
+#define TRNG_TOTAL_DIGITS    (TRNG_DIGITS_PER_LINE * TRNG_LINES) // 105 číslic celkem
+
+char currentRandomNumber[TRNG_TOTAL_DIGITS + 1] = {0};
+uint32_t lastNumberGenTime = 0;
+uint32_t numberGenCount = 0;
+
+// Odběr jedné ryze fyzické náhodné číslice '0'..'9':
+// Rejection sampling eliminuje modulo zkreslení pro 100% matematicky uniformní rozdělení.
+char harvestPureHardwareDigit() {
+    while (true) {
+        // Krátká mikrosekundová prodleva pro akumulaci nového RF a tepelného šumu
+        delayMicroseconds(50);
+        
+        uint8_t rfWideband = readSX1278Register(0x2C);
+        uint8_t rfChannel  = readSX1278Register(0x1B);
+        uint16_t adcNoise  = analogRead(ADC_NOISE_PIN);
+        uint32_t ccount    = esp_cpu_get_ccount();
+        uint32_t espHwTrng = esp_random(); // Interní fyzický hardware TRNG čipu ESP32
+        
+        // Smíchání výhradně fyzických šumů přes bitový XOR (žádná PRNG matematika!):
+        uint8_t physicalEntropy = rfWideband ^ rfChannel ^ 
+                                  ((uint8_t)(adcNoise & 0xFF)) ^ ((uint8_t)(adcNoise >> 8)) ^
+                                  ((uint8_t)(ccount & 0xFF)) ^ ((uint8_t)(ccount >> 8)) ^
+                                  ((uint8_t)(espHwTrng & 0xFF)) ^ ((uint8_t)(espHwTrng >> 8));
+        
+        // Rejection sampling pro 0-9:
+        // 250 je nejvyšší násobek 10 pod 256. 
+        // Hodnoty 0..249 se mapují přesně rovnoměrně na číslice 0..9 (každá s pravděpodobností 25/250 = 10%).
+        // Hodnoty 250..255 se zahazují a odebírá se nový fyzický šum.
+        if (physicalEntropy < 250) {
+            return '0' + (physicalEntropy % 10);
+        }
+    }
+}
+
+void generateNewTrueRandomNumber() {
+    for (int i = 0; i < TRNG_TOTAL_DIGITS; i++) {
+        currentRandomNumber[i] = harvestPureHardwareDigit();
+    }
+    currentRandomNumber[TRNG_TOTAL_DIGITS] = '\0';
+    lastNumberGenTime = millis();
+    numberGenCount++;
+    
+    Serial.printf("\n[TRNG #%u | 10s] Nové 105-místné číslo ze 433MHz fyzického šumu:\n%s\n", 
+                  numberGenCount, currentRandomNumber);
+}
+
+void renderTrueRandomScreen() {
+    uint32_t now = millis();
+    
+    // Generování nového čísla přesně každých 10 sekund (10000 ms)
+    if (lastNumberGenTime == 0 || (now - lastNumberGenTime >= 10000)) {
+        generateNewTrueRandomNumber();
+    }
+    
+    u8g2.clearBuffer();
+    
+    // 1. Horní stavová lišta
+    u8g2.setFont(u8g2_font_5x7_tf);
+    char hdr[32];
+    snprintf(hdr, sizeof(hdr), "TRNG #%u 433MHz", numberGenCount);
+    u8g2.drawStr(1, 8, hdr);
+    
+    uint32_t elapsed = now - lastNumberGenTime;
+    uint32_t secLeft = (elapsed >= 10000) ? 0 : ((10000 - elapsed) / 1000 + 1);
+    if (secLeft > 10) secLeft = 10;
+    
+    char timeStr[16];
+    snprintf(timeStr, sizeof(timeStr), "[ %us ]", secLeft);
+    u8g2.drawStr(90, 8, timeStr);
+    
+    // Oddělovací linka pod hlavičkou
+    u8g2.drawHLine(0, 10, 128);
+    
+    // 2. Tělo: 105 číslic na 5 řádcích (21 číslic na řádek) fontem 6x10
+    u8g2.setFont(u8g2_font_6x10_tf);
+    char lineBuf[TRNG_DIGITS_PER_LINE + 1];
+    
+    for (int l = 0; l < TRNG_LINES; l++) {
+        memcpy(lineBuf, &currentRandomNumber[l * TRNG_DIGITS_PER_LINE], TRNG_DIGITS_PER_LINE);
+        lineBuf[TRNG_DIGITS_PER_LINE] = '\0';
+        int y = 20 + l * 10; // y = 20, 30, 40, 50, 60
+        u8g2.drawStr(1, y, lineBuf);
+    }
+    
+    // 3. Spodní plynulý progress bar (y=63, šířka 0..128 px)
+    int prog = (int)((elapsed * 128) / 10000);
+    prog = constrain(prog, 0, 128);
+    u8g2.drawHLine(0, 63, prog);
+}
+
+// =============================================================================
 // MODE SWITCH NOTIFICATION BANNER
 // =============================================================================
 void drawModeBanner() {
@@ -633,6 +735,10 @@ void drawModeBanner() {
             u8g2.drawStr(30, 29, "COSMIC FIRE");
             u8g2.setFont(u8g2_font_4x6_tf);
             u8g2.drawStr(36, 40, "DOOM FLAME ENGINE");
+        } else if (activeVisualMode == VISUAL_TRUE_RANDOM_NUM) {
+            u8g2.drawStr(16, 29, "TRUE RANDOM NUM");
+            u8g2.setFont(u8g2_font_4x6_tf);
+            u8g2.drawStr(22, 40, "433MHz RF NOISE 10s");
         }
     }
 }
@@ -727,7 +833,8 @@ void setVisualMode(VisualMode newMode) {
                   (int)activeVisualMode,
                   activeVisualMode == VISUAL_TESLA_LIGHTNING ? "TESLA LIGHTNING" :
                   activeVisualMode == VISUAL_CYBER_SPECTRUM  ? "CYBER SPECTRUM" :
-                  activeVisualMode == VISUAL_STARFIELD_WARP  ? "COSMIC STARFIELD" : "COSMIC FIRE");
+                  activeVisualMode == VISUAL_STARFIELD_WARP  ? "COSMIC STARFIELD" :
+                  activeVisualMode == VISUAL_COSMIC_FIRE     ? "COSMIC FIRE" : "TRUE RANDOM NUMBER");
 }
 
 void nextVisualMode() {
@@ -757,6 +864,8 @@ void handleSerialCommands() {
             setVisualMode(VISUAL_STARFIELD_WARP);
         } else if (c == '4') {
             setVisualMode(VISUAL_COSMIC_FIRE);
+        } else if (c == '5') {
+            setVisualMode(VISUAL_TRUE_RANDOM_NUM);
         } else if (c == ' ' || c == 'm' || c == 'M' || c == 'n' || c == 'N') {
             nextVisualMode();
         } else if (c == 'a' || c == 'A') {
@@ -834,7 +943,8 @@ void setup() {
     Serial.println("\n╔═════════════════════════════════════════════════╗");
     Serial.println("║    COSMIC RANDOM INTERFERENCE VISUALIZER        ║");
     Serial.println("║       LilyGo LoRa32 T3 V1.6.1 - 433 MHz         ║");
-    Serial.println("║  [1] Tesla Arc  [2] Cyber Spectrum  [3] Fire    ║");
+    Serial.println("║  [1] Tesla  [2] Cyber  [3] Stars  [4] Fire      ║");
+    Serial.println("║  [5] True Random Number (433MHz Hardware TRNG)  ║");
     Serial.println("║  Ovládání: RST tlačítko, Touch GPIO 4, Serial   ║");
     Serial.println("╚═════════════════════════════════════════════════╝");
     
@@ -853,6 +963,7 @@ void setup() {
     } else {
         // Běžné zapnutí / zapojení USB: načíst uložený režim
         int savedMode = prefs.getInt("mode", (int)activeVisualMode);
+        if (savedMode < 0 || savedMode >= VISUAL_COUNT) savedMode = (int)activeVisualMode;
         activeVisualMode = (VisualMode)savedMode;
         modeBannerTimer = millis() + 1500;
     }
@@ -879,7 +990,7 @@ void setup() {
     u8g2.drawStr(10, 22, "COSMIC SENSOR");
     u8g2.drawStr(22, 38, "RF INTERFERENCE");
     u8g2.setFont(u8g2_font_4x6_tf);
-    u8g2.drawStr(12, 56, "Tesla / Spectrum / Fire");
+    u8g2.drawStr(8, 56, "Tesla/Cyber/Stars/Fire/TRNG");
     u8g2.sendBuffer();
     
     // LoRa SX1278 inicializace
@@ -941,6 +1052,10 @@ void loop() {
             updateFirePhysics();
             renderFireToBuffer();
             drawFireHUD();
+            break;
+            
+        case VISUAL_TRUE_RANDOM_NUM:
+            renderTrueRandomScreen();
             break;
     }
     

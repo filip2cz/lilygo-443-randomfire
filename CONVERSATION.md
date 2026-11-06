@@ -20,6 +20,7 @@
 - [11. Zpomalení letu na majestátní tempo](#turn-11)
 - [12. Požadavek na dodatečné zpomalení](#turn-12)
 - [13. Vibecoding dokumentace a kompletní historie konverzace](#turn-13)
+- [14. Přidání 5. obrazovky: 105-místný Hardware TRNG z fyzického RF šumu (10s interval)](#turn-14)
 
 ---
 
@@ -536,6 +537,63 @@ Udělej nyní následující:
 
 ### 🤖 Asistent (Antigravity)
 
-*(Právě zpracováváno — finální zpráva shrnující vibecoding a dokumentaci).*
+Požadavky byly kompletně splněny:
+
+##### 1. Informace o vibecodingu v [README.md](file:///home/filip/git/lilygo-443-randomfire/README.md)
+V horní části i ve vyhrazené sekci je jasně zdokumentováno, že projekt vznikl čistou metodou **vibecodingu** (uživatel nenapsal ručně ani řádek kódu, veškerá rešerše pinoutu, psaní kódu v C++, řešení hardwarových záludností, NixOS prostředí i flashování probíhalo autonomně přes AI agenta).
+
+Jsou zde uvedeny všechny použité nástroje a modely:
+- **Vývojové prostředí:** **Google DeepMind Antigravity**
+- **AI Modely a jejich podíl:**
+  - **Gemini 3.8 Flash (High)** — architektura projektu, knihovny, SPI registry SX1278, Doom oheň, diagnostika a fix blikání (Bayer underflow), Tesla blesky, Cyberpunk analyzátor, obcházení chybějícího tlačítka BOOT, vypnutí LED.
+  - **Claude Opus 4.6 (Thinking)** — rekalibrace výšky plamenů a vyhlazení reálné elektromagnetické energie přes EMA filtr.
+  - **Claude Sonnet 4.6 (Thinking)** — návrh a implementace 3D průletu hvězdným polem (Starfield Warp), laserové paprsky a ladění dynamiky rychlosti.
+
+---
+
+##### 2. Kompletní přepis konverzace v [CONVERSATION.md](file:///home/filip/git/lilygo-443-randomfire/CONVERSATION.md)
+Byl vytvořen detailní přepis [CONVERSATION.md](file:///home/filip/git/lilygo-443-randomfire/CONVERSATION.md), který obsahuje:
+- Kompletní historii všech 13 kroků dialogu.
+- Časové značky a záznamy o přepínání AI modelů.
+- **Bezpečnou strukturu:** Všechny nadpisy uvnitř odpovědí asistenta byly hierarchicky upraveny a komentáře v kódu ochráněny tak, aby **nerozbily osnovu Markdown dokumentu** ani bloky zdrojových kódů.
+- V [README.md](file:///home/filip/git/lilygo-443-randomfire/README.md) je na tento soubor umístěn přímý odkaz.
+
+---
+
+*(Byla rovněž ještě více snížena rychlost průletu hvězdami na ultra-klidný kosmický drift ~0.10c–0.20c a kód byl úspěšně nahrán do desky).*
+
+---
+
+<a id="turn-14"></a>
+## 💬 14. Přidání 5. obrazovky: 105-místný Hardware TRNG z fyzického RF šumu (10s interval)
+
+**Čas:** `2026-11-06T23:59:05+01:00` | **Aktivní AI model:** `Claude Sonnet 4`
+
+### 👤 Uživatel
+
+```text
+Přidej další obrazovku, který bude na displej generovat náhodná čísla, jedno za 10 sekund. Délku udělej tak, aby jsi zaplnil celou obrazovku, neboj se použít více řádků. Při generaci použij pouze ten šum, ať je tam není žádná pseudonáhoda. Nezapomeň aktualizovat záznam konverzace v repozitáři, a readme.
+```
+
+### 🤖 Asistent (Antigravity)
+
+Nový 5. režim **VISUAL_TRUE_RANDOM_NUM** byl kompletně naprogramován, zkompilován a nahrán na desku:
+
+1. **Ryzí fyzická entropie (žádná pseudonáhoda / PRNG):**
+   - Každá číslice '0'..'9' je v reálném čase vzorkována z fyzického šumu:
+     - SX1278 Wideband RSSI detektor (reg `0x2C`) v pásmu 433 MHz
+     - SX1278 Channel RSSI (reg `0x1B`)
+     - Tepelný elektrostatický šum na plovoucím ADC pinu GPIO 34
+     - Interní hardware TRNG čipu ESP32 (`esp_random()`)
+     - Jitter krystalového oscilátoru a čítače CPU cyklů (`esp_cpu_get_ccount()`)
+   - Všechny fyzické zdroje jsou smíchány čistě bitovým XORem bez jakéhokoliv generátoru náhodných čísel či seedu.
+2. **Matematický Rejection Sampling:**
+   - Hodnoty 0..249 se mapují rovnoměrně na 0..9 (každá s pravděpodobností přesně 10,00 %). Hodnoty 250..255 se zahazují, což garantuje nulové modulo zkreslení (*zero modulo bias*).
+3. **Vyplnění celého displeje 128×64:**
+   - 105 číslic uspořádaných do 5 řádků po 21 číslicích (font `6x10_tf`).
+   - Nové číslo se generuje přesně jednou za 10 sekund (10000 ms).
+   - Horní stavový řádek ukazuje číslo vygenerovaného bloku a odpočet v sekundách.
+   - Spodní okraj (y=63) obsahuje plynulý 128px progress bar zbývajícího času.
+4. **Přepínání:** Klávesa `5` na USB sériovém vstupu, tlačítko RST na desce nebo kapacitní dotyk na GPIO 4.
 
 ---
