@@ -21,6 +21,12 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <Preferences.h>
+#include "wifi_config.h"
+
+#if WIFI_ENABLED
+#include <WiFi.h>
+#include <WebServer.h>
+#endif
 
 // =============================================================================
 // HLAVNÍ REŽIM VIZUALIZACE (Lze nastavit zde nebo přepínat tlačítkem RST / Touch / Serial)
@@ -713,6 +719,214 @@ void renderTrueRandomScreen() {
 }
 
 // =============================================================================
+// VOLITELNÝ WI-FI A WEBOVÝ SERVER (API PRO GENEROVÁNÍ NÁHODNÝCH ČÍSEL)
+// =============================================================================
+#if WIFI_ENABLED
+WebServer server(80);
+bool wifiConnected = false;
+bool serverStarted = false;
+uint32_t lastWifiAttempt = 0;
+String deviceIpAddress = "";
+
+const char HTML_PAGE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cosmic LoRa 433MHz TRNG API</title>
+<style>
+body{background:#0d1117;color:#c9d1d9;font-family:system-ui,-apple-system,monospace;margin:0;padding:20px;display:flex;justify-content:center}
+.container{max-width:680px;width:100%;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;box-shadow:0 8px 24px rgba(0,0,0,0.5)}
+h1{color:#58a6ff;font-size:1.35rem;margin-top:0;display:flex;align-items:center;gap:10px}
+.badge{background:#238636;color:#fff;font-size:0.75rem;padding:3px 8px;border-radius:20px}
+.meta{font-size:0.85rem;color:#8b949e;margin-bottom:20px;line-height:1.4}
+.controls{display:flex;gap:10px;margin-bottom:15px;flex-wrap:wrap;align-items:center}
+input[type=number]{background:#0d1117;border:1px solid #30363d;color:#f0f6fc;padding:10px 14px;border-radius:6px;font-size:1rem;width:110px}
+button{background:#238636;color:#fff;border:none;padding:10px 16px;border-radius:6px;font-size:0.95rem;font-weight:600;cursor:pointer}
+button:hover{background:#2ea043}
+.quick-btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;padding:6px 10px;font-size:0.85rem}
+.quick-btn:hover{background:#30363d}
+.result-box{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px;margin-top:15px;word-break:break-all;font-family:monospace;font-size:1.05rem;color:#7ee787;min-height:48px;position:relative}
+.copy-btn{position:absolute;top:8px;right:8px;background:#21262d;color:#8b949e;border:1px solid #30363d;padding:4px 8px;font-size:0.75rem;border-radius:4px;cursor:pointer}
+.copy-btn:hover{color:#f0f6fc;background:#30363d}
+.api-box{margin-top:22px;border-top:1px solid #30363d;padding-top:15px;font-size:0.85rem;color:#8b949e;line-height:1.6}
+code{background:#040d21;color:#79c0ff;padding:2px 6px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>🌌 Cosmic LoRa 433MHz <span class="badge">TRNG Online</span></h1>
+<div class="meta">
+Náhodná čísla generovaná v reálném čase výhradně z rádiového šumu antény SX1278 (Semtech AN1200.24 Von Neumann debiasing). 100% fyzikální entropie bez pseudonáhody.
+</div>
+<div class="controls">
+<label for="len">Počet cifer:</label>
+<input type="number" id="len" min="1" max="2000" value="50">
+<button onclick="gen()">Vygenerovat</button>
+<button class="quick-btn" onclick="setLen(16)">16</button>
+<button class="quick-btn" onclick="setLen(32)">32</button>
+<button class="quick-btn" onclick="setLen(64)">64</button>
+<button class="quick-btn" onclick="setLen(105)">105</button>
+<button class="quick-btn" onclick="setLen(256)">256</button>
+</div>
+<div class="result-box" id="res">
+<span style="color:#8b949e">Klikněte na Vygenerovat...</span>
+<button class="copy-btn" id="cpBtn" style="display:none" onclick="copy()">Kopírovat</button>
+</div>
+<div class="api-box">
+<b>🚀 Příkazová řádka / HTTP API:</b><br>
+<code>curl http://&lt;IP&gt;/&lt;počet_cifer&gt;</code> &mdash; vrátí čisté číslo jako text.<br>
+Příklad: <code>curl http://&lt;IP&gt;/32</code> nebo <code>curl http://&lt;IP&gt;/100</code>
+</div>
+</div>
+<script>
+function setLen(n){document.getElementById('len').value=n;gen();}
+async function gen(){
+const l=document.getElementById('len').value||50;
+const r=document.getElementById('res');
+r.innerHTML='<span style="color:#8b949e">Odběr šumu z antény...</span>';
+try{
+const res=await fetch('/'+l);
+const txt=await res.text();
+r.innerText=txt.trim();
+const btn=document.createElement('button');
+btn.className='copy-btn';
+btn.id='cpBtn';
+btn.innerText='Kopírovat';
+btn.onclick=copy;
+r.appendChild(btn);
+}catch(e){r.innerText='Chyba: '+e;}
+}
+function copy(){
+const t=document.getElementById('res').innerText.replace('Kopírovat','').trim();
+navigator.clipboard.writeText(t);
+const b=document.getElementById('cpBtn');
+if(b){b.innerText='Zkopírováno!';setTimeout(()=>b.innerText='Kopírovat',1500);}
+}
+</script>
+</body>
+</html>
+)rawliteral";
+
+void handleWebRoute() {
+    String uri = server.uri();
+    String param = uri.substring(1);
+    if (param.endsWith("/")) {
+        param = param.substring(0, param.length() - 1);
+    }
+    
+    bool isNumber = (param.length() > 0);
+    for (unsigned int i = 0; i < param.length(); i++) {
+        if (!isDigit(param[i])) {
+            isNumber = false;
+            break;
+        }
+    }
+    
+    if (!isNumber && param.equalsIgnoreCase("cislo")) {
+        isNumber = true;
+        param = server.hasArg("len") ? server.arg("len") : "50";
+    }
+    
+    if (isNumber) {
+        long count = param.toInt();
+        if (count < 1) count = 1;
+        if (count > 2048) count = 2048; // Bezpečný limit RAM a stability
+        
+        String result = "";
+        result.reserve(count + 1);
+        for (long i = 0; i < count; i++) {
+            result += harvestPureHardwareDigit();
+            if ((i & 0x3F) == 0) yield();
+        }
+        
+        if (server.hasArg("format") && server.arg("format") == "json") {
+            String json = "{\"digits\":" + String(count) + ",\"number\":\"" + result + "\",\"source\":\"SX1278 433MHz RF noise\"}\n";
+            server.send(200, "application/json", json);
+        } else {
+            server.send(200, "text/plain", result + "\n");
+        }
+        return;
+    }
+    
+    server.send(404, "text/plain", "404 Not Found\nPouziti: http://" + deviceIpAddress + "/<pocet_cifer>\nNapr: http://" + deviceIpAddress + "/50\n");
+}
+
+void setupWebServer() {
+    server.on("/", HTTP_GET, []() {
+        server.send_P(200, "text/html", HTML_PAGE);
+    });
+    server.onNotFound(handleWebRoute);
+    server.begin();
+    serverStarted = true;
+    Serial.printf("[WEB] Webový server spuštěn na http://%s/\n", deviceIpAddress.c_str());
+    Serial.printf("[WEB] API připraveno: curl http://%s/<pocet_cifer>\n", deviceIpAddress.c_str());
+}
+
+void initWifiAndServer() {
+    Serial.println("\n[WIFI] Inicializace Wi-Fi připojení...");
+    WiFi.mode(WIFI_STA);
+    
+    #if USE_STATIC_IP
+    IPAddress ip(STATIC_IP);
+    IPAddress gateway(STATIC_GATEWAY);
+    IPAddress subnet(STATIC_SUBNET);
+    IPAddress dns1(STATIC_PRIMARY_DNS);
+    IPAddress dns2(STATIC_SECONDARY_DNS);
+    if (!WiFi.config(ip, gateway, subnet, dns1, dns2)) {
+        Serial.println("[WIFI] Chyba konfigurace statické IP! Použije se DHCP.");
+    } else {
+        Serial.printf("[WIFI] Nastavena statická IP: %s\n", ip.toString().c_str());
+    }
+    #endif
+    
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    // Krátký neblokující pokus o připojení při startu (max 2 sekundy)
+    uint32_t startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt < 2000)) {
+        delay(100);
+        Serial.print(".");
+    }
+    Serial.println();
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiConnected = true;
+        deviceIpAddress = WiFi.localIP().toString();
+        Serial.printf("[WIFI] Připojeno! IP adresa: %s\n", deviceIpAddress.c_str());
+        setupWebServer();
+    } else {
+        Serial.println("[WIFI] Připojování pokračuje na pozadí (neblokuje OLED displej)...");
+    }
+}
+
+void handleWifiAndServer() {
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!wifiConnected) {
+            wifiConnected = true;
+            deviceIpAddress = WiFi.localIP().toString();
+            Serial.printf("\n[WIFI] Připojeno na pozadí! IP adresa: %s\n", deviceIpAddress.c_str());
+        }
+        if (!serverStarted) {
+            setupWebServer();
+        }
+        server.handleClient();
+    } else {
+        if (wifiConnected) {
+            wifiConnected = false;
+            Serial.println("\n[WIFI] Spojení přerušeno, probíhá automatické znovupřipojení...");
+        }
+        uint32_t now = millis();
+        if (now - lastWifiAttempt > 15000) {
+            lastWifiAttempt = now;
+            WiFi.reconnect();
+        }
+    }
+}
+#endif
+
+// =============================================================================
 // MODE SWITCH NOTIFICATION BANNER
 // =============================================================================
 void drawModeBanner() {
@@ -1029,6 +1243,11 @@ void setup() {
     initFire();
     initSparks();
     initStarfield();
+    
+    #if WIFI_ENABLED
+    initWifiAndServer();
+    #endif
+    
     delay(400);
 }
 
@@ -1081,6 +1300,11 @@ void loop() {
     
     // 6. Hardwarová LED
     updateFlickerLED();
+    
+    // 7. Volitelný webový server pro generování náhodných čísel přes síť
+    #if WIFI_ENABLED
+    handleWifiAndServer();
+    #endif
     
     // Telemetrie na Serial
     frameCount++;

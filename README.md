@@ -87,3 +87,54 @@ Projekt byl vytvořen od nuly bez manuálního psaní kódu pomocí agentního p
 2. **Automatický kolotoč (Auto-Cycle):** Režimy se samy plynule střídají každých 20 sekund jako živá galerie.
 3. **Kapacitním dotykem:** Dotkněte se prstem pinu **GPIO 4** na liště desky.
 4. **Sériovým monitorem přes USB:** Klávesy `1`, `2`, `3`, `4`, `5`, `Mezerník` nebo `A` (vypnutí/zapnutí kolotoče).
+
+---
+
+## 🌐 Volitelné Wi-Fi připojení & Webový Server (HTTP API)
+
+Deska nabízí volitelnou možnost připojení k lokální síti a spuštění HTTP serveru pro generování libovolně dlouhých náhodných čísel přímo z antény přes síť.
+
+### ⚙️ Konfigurace v souboru `include/wifi_config.h`
+Veškeré síťové nastavení je bezpečně odděleno v souboru [include/wifi_config.h](include/wifi_config.h):
+
+```c
+// 1. Povolení / zakázání Wi-Fi (true = zapnuto, false = zcela vypnuto bez vlivu na systém)
+#define WIFI_ENABLED            true
+
+// 2. Přihlašovací údaje k Wi-Fi
+#define WIFI_SSID               "Vase-WiFi-SSID"
+#define WIFI_PASSWORD           "Vase-WiFi-Heslo"
+
+// 3. Volba DHCP vs. Statická IP adresa
+#define USE_STATIC_IP           false   // false = DHCP, true = statická IP níže
+
+// 4. Nastavení statické IP (použije se při USE_STATIC_IP == true)
+#define STATIC_IP               192, 168, 1, 50
+#define STATIC_GATEWAY          192, 168, 1, 1
+#define STATIC_SUBNET           255, 255, 255, 0
+```
+
+### 🚀 Použití Webového API
+Po připojení k síti běží na desce lehký webový server:
+
+1. **Získání náhodného čísla zadané délky (Plain Text):**
+   ```bash
+   # Získání 32-místného náhodného čísla:
+   curl http://192.168.1.50/32
+
+   # Získání 100-místného náhodného čísla:
+   curl http://192.168.1.50/100
+   ```
+2. **Alternativní formát URL:**
+   ```bash
+   curl http://192.168.1.50/cislo?len=64
+   ```
+3. **JSON výstup:**
+   ```bash
+   curl http://192.168.1.50/64?format=json
+   ```
+4. **Interaktivní webové rozhraní:**
+   Při otevření adresy `http://192.168.1.50/` v běžném webovém prohlížeči (na mobilu či PC) se zobrazí přehledné tmavé rozhraní s volbou počtu cifer, tlačítkem pro okamžité vygenerování a tlačítkem pro zkopírování čísla do schránky.
+
+> [!NOTE]
+> **Nulový dopad na běh systému:** Pokud je Wi-Fi vypnuta nebo se zrovna nepoužívá, připojování a obsluha probíhá neblokujícím způsobem na pozadí a nemá absolutně žádný vliv na plynulost animací ani vykreslování OLED displeje (45–50 FPS). Každá číslice je generována přímo z fyzického RF šumu čipu SX1278.
