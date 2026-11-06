@@ -1,53 +1,39 @@
 # Cosmic Random Interference Visualizer — LilyGo LoRa32 T3_V1.6.1 (433 MHz)
 
-Program pro desku **LilyGo LoRa32 T3_V1.6.1 (433MHz)**, který snímá náhodné rušení z okolního elektromagnetického prostředí, kosmický šum a signály v pásmu 433 MHz pomocí transceivery SX1278 a ESP32 hardware TRNG/ADC.
+Program pro desku **LilyGo LoRa32 T3_V1.6.1 (433MHz)**, který snímá náhodné rušení z okolního elektromagnetického prostředí, kosmický šum a rádiové signály v pásmu 433 MHz pomocí transceiveru SX1278 a ESP32 hardware TRNG/ADC.
 
-Na OLED displeji SSD1306 (128×64) nabízí **3 přepínatelné vizualizační režimy**.
+Na OLED displeji SSD1306 (128×64) nabízí **4 přepínatelné vizualizační režimy**.
 
 ---
 
-## 🎮 3 Režimy vizualizace
+## 🎮 4 Režimy vizualizace
 
-### 1. ⚡ VISUAL_TESLA_LIGHTNING (Elektrická plazma / Blesková bouře)
-- **Vizuál:** Ze spodní Tesla cívky / elektrody šlehají do prostoru procedurální rozvětvené elektrické výboje s bleskovou geometrií a plazmovými částicemi.
-- **Reakce na rušení:** 
-  - Při klidu cracklí jen jemné jiskření kolem elektrody.
-  - Při silném rušení nebo detekci signálu (např. klíče od auta) šlehne až 6 masivních rozvětvených blesků přes celou obrazovku.
-- **LED:** Vestavěná LED (GPIO 25) pulzuje a bleskově problikává jako stroboskop při každém výboji.
+### 1. 🌌 VISUAL_STARFIELD_WARP (3D Průlet hvězdami / Warp Speed Flight)
+- **Vizuál:** 72 trojrozměrných hvězd s plnou 3D perspektivní projekcí proudících z hloubi vesmíru přímo proti vám.
+- **Warp efekt:** 
+  - Při klidném éteru klidný let hlubokým vesmírem rychlostí ~1.2c (blízké hvězdy září jako křížky).
+  - Při vyšším rušení rychlost akceleruje až k 7.0c a hvězdy se natahují do světelných laserových paprsků (Warp streaks).
+  - Při detekci paketu (klíče od auta, LoRa přenos) proběhne **okamžitý skok do hyperprostoru** (14.0c)!
+- **Řízení kurzu:** Kosmický vítr a frekvenční gradient naklánějí úběžník letu (Yaw/Pitch).
+- **HUD:** `WARP 433.92M -74dB 4.5c` s jemným středovým zaměřovačem.
 
-### 2. 📡 VISUAL_CYBER_SPECTRUM (Cyberpunk RF spektrální analyzátor & vektorový skop)
-- **Horní část (y=0..20):** 9-sloupcový spektrální analyzátor pro 9 kanálů v pásmu 433 MHz (433.05 až 434.65 MHz) s **Peak Hold** indikátory, které líně klesají s gravitací.
-- **Střední část (y=22..53):** Vektorový osciloskop s retikulem a spojitou analogovou křivkou reagující na surový elektrostatický a rádiový šum.
-- **Spodní část (y=55..63):** Sci-fi telemetrická páska s aktuální frekvencí, RSSI a surovými hex byty entropie.
-- **LED:** Intenzita svitu přímo kopíruje energii signálu na aktivní frekvenci.
+### 2. ⚡ VISUAL_TESLA_LIGHTNING (Elektrická plazma / Blesková bouře)
+- **Vizuál:** Ze spodní cívky/elektrody šlehají do tmy procedurální rozvětvené blesky a létají z nich plazmové částice.
+- **Reakce na rušení:** Při klidu v místnosti jde o jemné jiskření kolem elektrody. Při zvýšení rušení vyšlehnou až 4–6 masivních rozvětvených blesků přes celou obrazovku.
 
-### 3. 🔥 VISUAL_COSMIC_FIRE (Kosmický oheň - Doom Fire Engine)
-- Klasický Doom Fire algoritmus s uspořádaným 8×8 Bayerovým ditheringem.
-- Výška a energie plamene se adaptivně přizpůsobuje množství rušení v místnosti.
-- **LED:** Mihotá se jako světlo z krbu.
+### 3. 📡 VISUAL_CYBER_SPECTRUM (Cyberpunk RF Spektrální analyzátor & Vektorový skop)
+- **Horní část (y=0..20):** 9-sloupcový spektrální analyzátor pro 9 kanálů v pásmu 433 MHz s gravitačně klesajícími **Peak Hold** indikátory.
+- **Střední část (y=22..53):** Vektorový analogový osciloskop s retikulem a živou spojitou křivkou deformovanou rádiovým a elektrostatickým šumem.
+- **Spodní část (y=55..63):** Sci-fi telemetrická páska (`433.92M -74dB [0x0E 0512 PKT:0]`) se surovými hex byty entropie.
+
+### 4. 🔥 VISUAL_COSMIC_FIRE (Původní Doom Fire)
+- Termodynamický oheň s 8×8 Bayerovým ditheringem a adaptivní výškou plamenů.
 
 ---
 
 ## 🕹️ Přepínání režimů
 
-1. **Hardwarově za běhu:** Stiskněte tlačítko **BOOT (GPIO 0)** na desce. Na 1,4 s se zobrazí stylový rámeček s názvem nově aktivovaného režimu.
-2. **V kódu jako výchozí režim:** V souboru [src/main.cpp](file:///home/filip/git/lilygo-443-randomfire/src/main.cpp) hned nahoře:
-```cpp
-// 0 = VISUAL_TESLA_LIGHTNING, 1 = VISUAL_CYBER_SPECTRUM, 2 = VISUAL_COSMIC_FIRE
-VisualMode activeVisualMode = VISUAL_TESLA_LIGHTNING;
-```
-
----
-
-## ⚙️ Vývoj a nahrávání v NixOS
-
-```bash
-# Vstup do prostředí NixOS
-nix-shell
-
-# Nahrání do desky (automatická detekce portu)
-pio run -t upload
-
-# Sledování FPS a telemetrie (stabilních ~45 FPS)
-pio device monitor
-```
+1. **Tlačítkem RST na boku desky:** Jedním stiskem tlačítka RST se deska restartuje a ihned přeskočí na následující režim (uloží se i do paměti flash).
+2. **Automatický kolotoč (Auto-Cycle):** Režimy se samy plynule střídají každých 20 sekund jako živá galerie.
+3. **Kapacitním dotykem:** Dotkněte se prstem pinu **GPIO 4** na liště desky.
+4. **Sériovým monitorem přes USB:** Klávesy `1`, `2`, `3`, `4`, `Mezerník` nebo `A` (vypnutí/zapnutí kolotoče).
