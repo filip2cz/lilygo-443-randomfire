@@ -1,11 +1,18 @@
 /*******************************************************************************
- * COSMIC RANDOM FIRE - LilyGo T3 LoRa32 V1.6.1 (433MHz)
+ * COSMIC RANDOM INTERFERENCE VISUALIZER - LilyGo T3 LoRa32 V1.6.1 (433MHz)
  * 
  * Snímá náhodné rušení z okolního elektromagnetického prostředí, kosmický šum,
  * atmosférické výboje a fluktuace na frekvenci 433 MHz pomocí transceiveru SX1278
  * a ESP32 hardware TRNG/ADC.
- * Na OLED displeji (SSD1306) v reálném čase vykresluje autentický, stochasticky
- * řízený plamen (Doom Fire engine) ditherovaný 8x8 Bayerovou maticí.
+ * 
+ * Obsahuje 3 přepínatelné vizualizační režimy:
+ *   1. VISUAL_TESLA_LIGHTNING - Elektrická plazma / Blesková bouře (Tesla Arc)
+ *   2. VISUAL_CYBER_SPECTRUM  - Cyberpunk RF spektrální analyzátor & vektorový skop
+ *   3. VISUAL_COSMIC_FIRE     - Původní kosmický oheň (vyladěný Doom Fire)
+ * 
+ * Mezi režimy lze přepínat:
+ *   - Změnou proměnné 'activeVisualMode' níže v kódu
+ *   - Stiskem tlačítka BOOT (GPIO 0) na desce
  *******************************************************************************/
 
 #include <Arduino.h>
@@ -13,6 +20,22 @@
 #include <LoRa.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+
+// =============================================================================
+// HLAVNÍ REŽIM VIZUALIZACE (Lze nastavit zde nebo přepínat tlačítkem BOOT)
+//   0 = VISUAL_TESLA_LIGHTNING (Elektrická plazma / Tesla blesky)
+//   1 = VISUAL_CYBER_SPECTRUM  (Cyberpunk RF spektrální analyzátor & osciloskop)
+//   2 = VISUAL_COSMIC_FIRE     (Původní kosmický oheň - Doom Fire)
+// =============================================================================
+enum VisualMode {
+    VISUAL_TESLA_LIGHTNING = 0,
+    VISUAL_CYBER_SPECTRUM  = 1,
+    VISUAL_COSMIC_FIRE     = 2,
+    VISUAL_COUNT           = 3
+};
+
+// Nastavte výchozí režim zde:
+VisualMode activeVisualMode = VISUAL_TESLA_LIGHTNING;
 
 // =============================================================================
 // HARDWARE PIN DEFINITIONS (LilyGo LoRa32 T3 V1.6.1)
@@ -71,7 +94,7 @@ static const long FREQ_CHANNELS[] = {
 static const uint8_t NUM_CHANNELS = sizeof(FREQ_CHANNELS) / sizeof(FREQ_CHANNELS[0]);
 
 // =============================================================================
-// SPARK PARTICLE SYSTEM (Ejected embers from intense noise events)
+// SPARK PARTICLE SYSTEM (Sparks / Plasma embers)
 // =============================================================================
 #define MAX_SPARKS 24
 struct Spark {
@@ -84,19 +107,8 @@ struct Spark {
 };
 
 // =============================================================================
-// GLOBAL STATE & TELEMETRY
+// GLOBAL TELEMETRY & STATE
 // =============================================================================
-enum DisplayMode {
-    MODE_FIRE_HUD = 0,     // Oheň s elegantní telemetrickou lištou
-    MODE_FIRE_ONLY = 1,    // 100% fullscreen čistý oheň (bez textu)
-    MODE_RF_WATERFALL = 2, // Živý osciloskop rádiového šumu + oheň
-    MODE_COSMIC_STATS = 3, // Statistiky kosmické entropie
-    MODE_COUNT = 4
-};
-
-DisplayMode currentMode = MODE_FIRE_HUD;
-
-// Telemetry
 int currentRssi = -115;
 uint8_t currentWideband = 0;
 uint8_t currentChannelIdx = 5; // 433.92 MHz
@@ -106,12 +118,17 @@ uint16_t adcNoiseVal = 0;
 int cosmicWind = 0;             // -1 (doleva), 0, +1 (doprava)
 uint8_t burstFramesLeft = 0;    // Počet snímků plazmové erupce
 float fps = 0.0f;
-float smoothedEnergy = 0.0f;    // Vyhlazená energie ohně (0.0 = klid, 1.0 = plný žár)
+float smoothedEnergy = 0.25f;   // 0.05 = ticho, 1.0 = masivní rušení
+uint32_t modeBannerTimer = 0;   // Časovač pro zobrazení banneru při přepnutí režimu
 
-// History buffer for waterfall oscilloscope (128 columns)
+// Spektrum pro 9 kanálů (pro Cyberpunk analyzátor)
+float channelPower[NUM_CHANNELS] = {0};
+float channelPeak[NUM_CHANNELS] = {0};
+
+// Historie pro osciloskop (128 vzorků)
 uint8_t noiseHistory[SCREEN_WIDTH];
 
-// 2D Heat Buffer (128x64)
+// Buffer pro oheň (128x64)
 uint8_t heat[SCREEN_HEIGHT][SCREEN_WIDTH];
 Spark sparks[MAX_SPARKS];
 
@@ -141,6 +158,10 @@ static inline uint8_t harvestEntropyByte() {
     return (uint8_t)(entropyState >> 56);
 }
 
+static inline float harvestEntropyFloat() {
+    return (float)harvestEntropyByte() / 255.0f;
+}
+
 // =============================================================================
 // SPARK EMBER SYSTEM
 // =============================================================================
@@ -150,15 +171,15 @@ void initSparks() {
     }
 }
 
-void spawnSpark(int x, float power) {
+void spawnSpark(int x, int y, float vx, float vy, uint8_t life) {
     for (int i = 0; i < MAX_SPARKS; i++) {
         if (!sparks[i].active) {
             sparks[i].active = true;
             sparks[i].x = (float)x;
-            sparks[i].y = (float)(SCREEN_HEIGHT - 3);
-            sparks[i].vx = ((float)(harvestEntropyByte() % 100) - 50.0f) / 50.0f + ((float)cosmicWind * 0.3f);
-            sparks[i].vy = -((float)(harvestEntropyByte() % 100) / 40.0f + 1.2f + power * 1.5f);
-            sparks[i].life = (uint8_t)(harvestEntropyByte() % 20 + 20);
+            sparks[i].y = (float)y;
+            sparks[i].vx = vx;
+            sparks[i].vy = vy;
+            sparks[i].life = life;
             break;
         }
     }
@@ -169,8 +190,7 @@ void updateSparks() {
         if (sparks[i].active) {
             sparks[i].x += sparks[i].vx;
             sparks[i].y += sparks[i].vy;
-            sparks[i].vy += 0.03f; // Gravitační zbrzdění
-            sparks[i].vx += ((float)cosmicWind * 0.04f);
+            sparks[i].vy += 0.03f;
             
             if (sparks[i].life > 0) {
                 sparks[i].life--;
@@ -186,7 +206,185 @@ void updateSparks() {
 }
 
 // =============================================================================
-// AUTHENTIC DOOM FIRE SIMULATION ENGINE
+// REŽIM 1: ⚡ ELEKTRICKÁ PLAZMA / BLESKOVÁ BOUŘE (TESLA ARC)
+// =============================================================================
+void drawLightningSegment(int x0, int y0, int x1, int y1, float displace, int depth) {
+    if (depth <= 0 || (abs(x1 - x0) <= 2 && abs(y1 - y0) <= 2)) {
+        u8g2.drawLine(x0, y0, x1, y1);
+        return;
+    }
+    
+    int midX = (x0 + x1) / 2;
+    int midY = (y0 + y1) / 2;
+    
+    // Posun kolmo k trajektorii
+    float jitterX = (harvestEntropyFloat() - 0.5f) * displace;
+    float jitterY = (harvestEntropyFloat() - 0.5f) * displace;
+    midX += (int)jitterX;
+    midY += (int)jitterY;
+    
+    // Vykreslit obě poloviny
+    drawLightningSegment(x0, y0, midX, midY, displace * 0.6f, depth - 1);
+    drawLightningSegment(midX, midY, x1, y1, displace * 0.6f, depth - 1);
+    
+    // Náhodné větvení blesku (pravděpodobnost roste s rušením)
+    if (depth >= 2 && harvestEntropyFloat() < (0.20f + smoothedEnergy * 0.35f)) {
+        int branchX = midX + (int)((midX - x0) * 0.6f + (harvestEntropyFloat() - 0.5f) * displace * 1.2f);
+        int branchY = midY + (int)((midY - y0) * 0.6f + (harvestEntropyFloat() - 0.5f) * displace * 1.2f);
+        drawLightningSegment(midX, midY, branchX, branchY, displace * 0.45f, depth - 2);
+    }
+}
+
+void renderTeslaLightning() {
+    u8g2.clearBuffer();
+    
+    // 1. Horní telemetrická lišta
+    u8g2.setFont(u8g2_font_5x7_tf);
+    u8g2.setDrawColor(1);
+    char str[32];
+    float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
+    snprintf(str, sizeof(str), "TESLA %.2fM", mhz);
+    u8g2.drawStr(1, 7, str);
+    
+    snprintf(str, sizeof(str), "%ddB", currentRssi);
+    u8g2.drawStr(70, 7, str);
+    
+    // Sloupec energie
+    int barW = (int)(smoothedEnergy * 24.0f);
+    u8g2.drawFrame(102, 1, 25, 7);
+    if (barW > 0) u8g2.drawBox(103, 2, barW, 5);
+    u8g2.drawHLine(0, 9, 128);
+    
+    // 2. Centrální elektroda / Tesla cívka dole uprostřed (x=64, y=56)
+    int originX = 64;
+    int originY = 54;
+    
+    // Podstavec cívky
+    u8g2.drawHLine(50, 63, 29);
+    u8g2.drawHLine(54, 61, 21);
+    u8g2.drawHLine(57, 59, 15);
+    u8g2.drawLine(59, 58, 69, 58);
+    // Kulová elektroda
+    u8g2.drawDisc(originX, originY, 3);
+    u8g2.drawCircle(originX, originY, 5); // Koróna
+    
+    // 3. Počet blesků podle energie rušení
+    // Klid (0.1) -> 1 blesk, Střed (0.4) -> 2-3 blesky, Špička (0.8+) -> 4-6 blesků
+    int numBolts = 1;
+    if (smoothedEnergy > 0.20f) numBolts = 2;
+    if (smoothedEnergy > 0.45f) numBolts = 3;
+    if (smoothedEnergy > 0.70f) numBolts = 4;
+    if (burstFramesLeft > 0) numBolts = 6;
+    
+    for (int b = 0; b < numBolts; b++) {
+        // Cílový bod výboje na stropě nebo bocích
+        int targetX, targetY;
+        float angle = (harvestEntropyFloat() * 140.0f - 70.0f) * 0.0174533f; // -70° až +70° od vertikály
+        float reach = 20.0f + smoothedEnergy * 42.0f + harvestEntropyFloat() * 15.0f;
+        
+        targetX = originX + (int)(sin(angle) * reach);
+        targetY = originY - (int)(cos(angle) * reach);
+        targetX = constrain(targetX, 4, 123);
+        targetY = constrain(targetY, 11, 55);
+        
+        float displace = 12.0f + smoothedEnergy * 16.0f;
+        int depth = 4;
+        
+        drawLightningSegment(originX, originY - 3, targetX, targetY, displace, depth);
+        
+        // Jiskra na konci výboje
+        if (harvestEntropyByte() > 180) {
+            spawnSpark(targetX, targetY, (harvestEntropyFloat() - 0.5f) * 1.5f, -harvestEntropyFloat() * 1.5f, 10);
+        }
+    }
+    
+    // 4. Aktualizace a vykreslení plazmových částic
+    updateSparks();
+    for (int i = 0; i < MAX_SPARKS; i++) {
+        if (sparks[i].active) {
+            int sx = (int)sparks[i].x;
+            int sy = (int)sparks[i].y;
+            if (sx >= 0 && sx < SCREEN_WIDTH && sy >= 10 && sy < SCREEN_HEIGHT) {
+                u8g2.drawPixel(sx, sy);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// REŽIM 2: 📡 CYBERPUNK RF SPEKTRÁLNÍ ANALYZÁTOR & VEKTOROVÝ OSKILOSKOP
+// =============================================================================
+void renderCyberSpectrum() {
+    u8g2.clearBuffer();
+    
+    // ─── 1. HORNÍ ČÁST: 9-pásmový sloupcový spektrální analyzátor (y = 0..20) ───
+    // 9 kanálů, šířka sloupce 10 px, mezera 3 px -> 9*13 - 3 = 114 px (vycentrováno x = 7..120)
+    int startX = 7;
+    int maxBarH = 15;
+    
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        int x = startX + i * 13;
+        int h = (int)(channelPower[i] * maxBarH);
+        h = constrain(h, 1, maxBarH);
+        
+        // Vykreslit sloupec
+        u8g2.drawBox(x, 18 - h, 10, h);
+        
+        // Peak Hold marker (horní líně klesající pomaleji)
+        int peakY = 18 - (int)(channelPeak[i] * maxBarH);
+        peakY = constrain(peakY, 2, 17);
+        u8g2.drawHLine(x, peakY, 10);
+        
+        // Zvýraznění aktuálně naladěného kanálu
+        if (i == currentChannelIdx) {
+            u8g2.drawPixel(x + 4, 19);
+            u8g2.drawPixel(x + 5, 19);
+        }
+    }
+    
+    // Dělicí horizontální linie pod spektrem
+    u8g2.drawHLine(0, 21, 128);
+    
+    // ─── 2. STŘEDNÍ ČÁST: Vektorový osciloskop (y = 22..53) ───
+    // Rastr / kříž
+    for (int x = 0; x < SCREEN_WIDTH; x += 4) {
+        u8g2.drawPixel(x, 37); // Středová osa X
+    }
+    for (int y = 23; y < 53; y += 4) {
+        u8g2.drawPixel(64, y); // Středová osa Y
+    }
+    
+    // Spojitá křivka osciloskopu
+    int prevX = 0;
+    int prevY = 37;
+    
+    for (int x = 0; x < SCREEN_WIDTH; x++) {
+        // Amplituda modulovaná rušením
+        float normVal = ((float)noiseHistory[x] - 12.0f) / 24.0f;
+        int waveY = 37 - (int)(normVal * (10.0f + smoothedEnergy * 14.0f));
+        waveY = constrain(waveY, 23, 52);
+        
+        if (x > 0) {
+            u8g2.drawLine(prevX, prevY, x, waveY);
+        }
+        prevX = x;
+        prevY = waveY;
+    }
+    
+    // Dělicí linie pod skopem
+    u8g2.drawHLine(0, 53, 128);
+    
+    // ─── 3. SPODNÍ ČÁST: Cyberpunk telemetrická páska (y = 55..63) ───
+    u8g2.setFont(u8g2_font_4x6_tf);
+    char tape[36];
+    float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
+    snprintf(tape, sizeof(tape), "%.2fM %ddB [0x%02X %04d PKT:%u]",
+             mhz, currentRssi, currentWideband, adcNoiseVal, packetCount);
+    u8g2.drawStr(1, 61, tape);
+}
+
+// =============================================================================
+// REŽIM 3: 🔥 PŮVODNÍ KOSMICKÝ OHEŇ (DOOM FIRE ENGINE)
 // =============================================================================
 void initFire() {
     memset(heat, 0, sizeof(heat));
@@ -196,67 +394,37 @@ void initFire() {
 
 void updateFirePhysics() {
     int bottomRow = SCREEN_HEIGHT - 1;
+    float E = smoothedEnergy;
     
-    // ─── Adaptivní energie ohně ───
-    // Wideband typicky 0x04..0x30 v běžném prostředí
-    // Odečteme šumový podlahu (~0x04) a škálujeme
-    float wbNorm = constrain(((float)currentWideband - 4.0f) / 40.0f, 0.0f, 1.0f);
-    // RSSI typicky -75..-70 dBm v klidném pokoji, -60..-40 při silném signálu
-    float rssiNorm = constrain((float)(currentRssi + 80) / 40.0f, 0.0f, 1.0f);
-    float targetEnergy = constrain(wbNorm * 0.7f + rssiNorm * 0.3f, 0.05f, 1.0f);
-    
-    if (burstFramesLeft > 0) {
-        targetEnergy = 1.0f; // Detekce paketu → plný žár
-        burstFramesLeft--;
-    }
-    
-    // Exponenciální klouzavý průměr pro plynulé přechody
-    // Rozhoření je pomalejší (0.06), vyhasínání ještě pomalejší (0.03)
-    float alpha = (targetEnergy > smoothedEnergy) ? 0.06f : 0.03f;
-    smoothedEnergy += alpha * (targetEnergy - smoothedEnergy);
-    float E = smoothedEnergy; // 0.0 = doutnavé uhlíky, 1.0 = plný žár
-    
-    // ─── Parametry odvozené z energie ───
-    // Palivo (fuel): 80 (doutnavé) .. 255 (plný žár)
     int baseFuel = (int)(80.0f + 175.0f * E);
-    // Chladnutí (decay): 10 (tiché = krátký plamen) .. 3 (hlasité = vysoký plamen)
-    int decayMin = (int)(10.0f - 7.0f * E); // 10..3
-    int decayRange = 3; // +0..+3 náhodná variace
-    // Pravděpodobnost mezer ve spodním řádku: 25% (tiché) .. 3% (hlasité)
-    int gapThreshold = (int)(64.0f - 56.0f * E); // 64..8 z 256
+    int decayMin = (int)(10.0f - 7.0f * E);
+    int decayRange = 3;
+    int gapThreshold = (int)(64.0f - 56.0f * E);
     
-    // 1. Spodní řádek: Generování žhavých uhlíků (Fuel Line)
+    // 1. Spodní řádek: Palivo
     for (int x = 0; x < SCREEN_WIDTH; x++) {
         uint8_t r = harvestEntropyByte();
-        
         if (r < gapThreshold) {
-            heat[bottomRow][x] = 0; // Mezera — jazyky plamene
+            heat[bottomRow][x] = 0;
         } else {
             int fuel = baseFuel + (r & 0x1F);
             heat[bottomRow][x] = (uint8_t)constrain(fuel, 0, 255);
-            
-            // Jiskry jen při silném rušení
             if (E > 0.6f && r > 248) {
-                spawnSpark(x, E);
+                spawnSpark(x, SCREEN_HEIGHT - 3, ((float)(r % 100) - 50.0f) / 50.0f, -((float)(r % 100) / 40.0f + 1.2f), 25);
             }
         }
     }
     
-    // 2. Doom Fire propagace tepla směrem vzhůru s chladnutím a driftem
+    // 2. Doom Fire propagace tepla
     for (int y = 1; y < SCREEN_HEIGHT; y++) {
         for (int x = 0; x < SCREEN_WIDTH; x++) {
             uint8_t pixel = heat[y][x];
-            
             if (pixel == 0) {
-                // Prázdný pixel: jen lehce chladit sousedy nahoře
                 if (heat[y - 1][x] > 3) heat[y - 1][x] -= 3;
                 else heat[y - 1][x] = 0;
             } else {
                 uint8_t r = harvestEntropyByte();
-                
                 int decay = decayMin + (r & decayRange);
-                
-                // Drift: -1, 0, +1 ovlivněný kosmickým větrem
                 int drift = ((int)(r >> 2) & 3) - 1 + cosmicWind;
                 
                 int dstX = x + drift;
@@ -269,17 +437,12 @@ void updateFirePhysics() {
         }
     }
     
-    // 3. Aktualizace jisker
     updateSparks();
 }
 
-// =============================================================================
-// DITHERED FRAMEBUFFER RENDERING (SSD1306)
-// =============================================================================
 void renderFireToBuffer() {
     uint8_t* pBuf = u8g2.getBufferPtr();
     
-    // 8 Paged horizontal stripes (each page = 8 vertical pixels)
     for (int page = 0; page < 8; page++) {
         int yBase = page * 8;
         for (int x = 0; x < SCREEN_WIDTH; x++) {
@@ -287,8 +450,6 @@ void renderFireToBuffer() {
             for (int bit = 0; bit < 8; bit++) {
                 int y = yBase + bit;
                 uint8_t h = heat[y][x];
-                
-                // 8x8 Bayer dithering threshold: striktně 0..252 (žádný podtečení!)
                 uint16_t threshold = ((uint16_t)pgm_read_byte(&BAYER_8X8[y & 7][x & 7])) * 4;
                 if (h > threshold) {
                     byteVal |= (1 << bit);
@@ -298,110 +459,64 @@ void renderFireToBuffer() {
         }
     }
     
-    // Vykreslení zářících jisker na černou oblohu nad plameny
+    // Jiskry
     for (int i = 0; i < MAX_SPARKS; i++) {
         if (sparks[i].active) {
             int sx = (int)sparks[i].x;
             int sy = (int)sparks[i].y;
             if (sx >= 0 && sx < SCREEN_WIDTH && sy >= 0 && sy < SCREEN_HEIGHT) {
                 pBuf[(sy / 8) * SCREEN_WIDTH + sx] |= (1 << (sy % 8));
-                // 2-pixelový vertikální svit pro výrazné jiskry
-                if (sy > 0) {
-                    pBuf[((sy - 1) / 8) * SCREEN_WIDTH + sx] |= (1 << ((sy - 1) % 8));
-                }
             }
         }
     }
 }
 
-// =============================================================================
-// SCREEN OVERLAYS & MODES
-// =============================================================================
-void renderWaterfallMode() {
-    uint8_t* pBuf = u8g2.getBufferPtr();
+void drawFireHUD() {
+    u8g2.setFontMode(1);
+    u8g2.setDrawColor(0);
+    u8g2.drawBox(0, 0, 128, 9);
+    u8g2.setDrawColor(1);
+    u8g2.drawHLine(0, 9, 128);
     
-    // Vyčistit horních 24 řádků pro RF osciloskop
-    for (int page = 0; page < 3; page++) {
-        for (int x = 0; x < SCREEN_WIDTH; x++) {
-            pBuf[page * SCREEN_WIDTH + x] = 0;
-        }
-    }
+    u8g2.setFont(u8g2_font_5x7_tf);
+    char str[32];
+    float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
+    snprintf(str, sizeof(str), "FIRE %.2fM", mhz);
+    u8g2.drawStr(2, 7, str);
     
-    // Vykreslit křivku rádiového šumu
-    for (int x = 0; x < SCREEN_WIDTH; x++) {
-        int y = constrain(map(noiseHistory[x], 0, 48, 22, 2), 2, 22);
-        pBuf[(y / 8) * SCREEN_WIDTH + x] |= (1 << (y % 8));
-        // Středová mřížka
-        if (x % 6 == 0) {
-            pBuf[(12 / 8) * SCREEN_WIDTH + x] |= (1 << (12 % 8));
-        }
-    }
+    snprintf(str, sizeof(str), "%ddB", currentRssi);
+    u8g2.drawStr(66, 7, str);
     
-    // Oddělovací linka
-    for (int x = 0; x < SCREEN_WIDTH; x++) {
-        pBuf[(23 / 8) * SCREEN_WIDTH + x] |= (1 << (23 % 8));
-    }
+    snprintf(str, sizeof(str), "WB:%02X", currentWideband);
+    u8g2.drawStr(98, 7, str);
 }
 
-void drawHUD() {
-    u8g2.setFontMode(1);
-    
-    if (currentMode == MODE_FIRE_HUD) {
-        // Elegantní horní lišta s černým pozadím
+// =============================================================================
+// MODE SWITCH NOTIFICATION BANNER
+// =============================================================================
+void drawModeBanner() {
+    if (millis() < modeBannerTimer) {
+        u8g2.setFontMode(0);
         u8g2.setDrawColor(0);
-        u8g2.drawBox(0, 0, 128, 9);
+        u8g2.drawBox(14, 16, 100, 32);
         u8g2.setDrawColor(1);
-        u8g2.drawHLine(0, 9, 128);
+        u8g2.drawFrame(14, 16, 100, 32);
+        u8g2.drawFrame(16, 18, 96, 28);
         
-        u8g2.setFont(u8g2_font_5x7_tf);
-        
-        // Frekvence
-        char str[32];
-        float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
-        snprintf(str, sizeof(str), "%.2fM", mhz);
-        u8g2.drawStr(2, 7, str);
-        
-        // RSSI
-        snprintf(str, sizeof(str), "%ddB", currentRssi);
-        u8g2.drawStr(44, 7, str);
-        
-        // Širokopásmový registr šumu
-        snprintf(str, sizeof(str), "WB:%02X", currentWideband);
-        u8g2.drawStr(80, 7, str);
-        
-        // Kosmický vítr indikátor
-        if (cosmicWind > 0) u8g2.drawStr(120, 7, ">");
-        else if (cosmicWind < 0) u8g2.drawStr(120, 7, "<");
-        else u8g2.drawStr(120, 7, "*");
-        
-    } else if (currentMode == MODE_RF_WATERFALL) {
-        u8g2.setFont(u8g2_font_4x6_tf);
-        u8g2.setDrawColor(1);
-        char str[32];
-        float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
-        snprintf(str, sizeof(str), "RF SCOPE: %.2fMHz  RSSI:%ddBm", mhz, currentRssi);
-        u8g2.drawStr(2, 6, str);
-        
-    } else if (currentMode == MODE_COSMIC_STATS) {
-        // Okno telemetrických statistik
-        u8g2.setDrawColor(0);
-        u8g2.drawBox(2, 2, 124, 42);
-        u8g2.setDrawColor(1);
-        u8g2.drawFrame(2, 2, 124, 42);
-        
-        u8g2.setFont(u8g2_font_5x7_tf);
-        u8g2.drawStr(6, 10, "COSMIC ENTROPY STATS");
-        
-        char buf[32];
-        float mhz = (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f;
-        snprintf(buf, sizeof(buf), "FREQ: %.3f MHz", mhz);
-        u8g2.drawStr(6, 19, buf);
-        
-        snprintf(buf, sizeof(buf), "RSSI: %d dBm | WB:0x%02X", currentRssi, currentWideband);
-        u8g2.drawStr(6, 28, buf);
-        
-        snprintf(buf, sizeof(buf), "ADC: %04d | PKT: %u", adcNoiseVal, packetCount);
-        u8g2.drawStr(6, 37, buf);
+        u8g2.setFont(u8g2_font_6x10_tf);
+        if (activeVisualMode == VISUAL_TESLA_LIGHTNING) {
+            u8g2.drawStr(22, 29, "TESLA LIGHTNING");
+            u8g2.setFont(u8g2_font_4x6_tf);
+            u8g2.drawStr(34, 40, "PLASMA ARC MODE");
+        } else if (activeVisualMode == VISUAL_CYBER_SPECTRUM) {
+            u8g2.drawStr(24, 29, "CYBER SPECTRUM");
+            u8g2.setFont(u8g2_font_4x6_tf);
+            u8g2.drawStr(32, 40, "RF ANALYZER & SCOPE");
+        } else if (activeVisualMode == VISUAL_COSMIC_FIRE) {
+            u8g2.drawStr(30, 29, "COSMIC FIRE");
+            u8g2.setFont(u8g2_font_4x6_tf);
+            u8g2.drawStr(36, 40, "DOOM FLAME ENGINE");
+        }
     }
 }
 
@@ -414,11 +529,11 @@ void sampleRFEnvironment() {
     uint32_t now = millis();
     
     // 1. Detekce RF signálu / paketu na frekvenci
-    uint8_t irqFlags = readSX1278Register(0x12); // REG_IRQ_FLAGS
-    if (irqFlags & 0x50) { // RxDone (0x40) nebo ValidHeader (0x10)
+    uint8_t irqFlags = readSX1278Register(0x12);
+    if (irqFlags & 0x50) {
         packetCount++;
-        burstFramesLeft = 14; // Záblesk sluneční erupce v ohni!
-        writeSX1278Register(0x12, irqFlags); // Vymazat příznaky přerušení
+        burstFramesLeft = 14;
+        writeSX1278Register(0x12, irqFlags);
     }
     
     // 2. Širokopásmový šum z registru 0x2C (REG_RSSI_WIDEBAND)
@@ -431,30 +546,49 @@ void sampleRFEnvironment() {
     }
     noiseHistory[SCREEN_WIDTH - 1] = currentWideband;
     
-    // 3. Vmíchání čerstvé fyzikální entropie do generátoru
+    // 3. Vmíchání čerstvé fyzikální entropie
     entropyState ^= ((uint64_t)currentWideband << 56) 
                   ^ ((uint64_t)(adcNoiseVal & 0x0FFF) << 40)
                   ^ ((uint64_t)esp_random() << 8)
                   ^ (uint64_t)esp_cpu_get_ccount();
     
     // 4. Periodické vzorkování RSSI
-    if (now - lastRssiSample > 100) {
+    if (now - lastRssiSample > 90) {
         lastRssiSample = now;
-        uint8_t rawRssi = readSX1278Register(0x1B); // REG_RSSI_VALUE
-        currentRssi = -164 + rawRssi; // SX1278 RSSI kalkulace pro 433 MHz
+        uint8_t rawRssi = readSX1278Register(0x1B);
+        currentRssi = -164 + rawRssi;
+        
+        // Výpočet adaptivní energie ohně a blesků
+        float wbNorm = constrain(((float)currentWideband - 4.0f) / 40.0f, 0.0f, 1.0f);
+        float rssiNorm = constrain((float)(currentRssi + 80) / 40.0f, 0.0f, 1.0f);
+        float targetEnergy = constrain(wbNorm * 0.7f + rssiNorm * 0.3f, 0.05f, 1.0f);
+        if (burstFramesLeft > 0) targetEnergy = 1.0f;
+        
+        float alpha = (targetEnergy > smoothedEnergy) ? 0.08f : 0.03f;
+        smoothedEnergy += alpha * (targetEnergy - smoothedEnergy);
+        
+        // Aktualizace spektrálního analyzátoru pro aktivní kanál
+        float p = constrain(wbNorm * 0.6f + rssiNorm * 0.4f, 0.05f, 1.0f);
+        channelPower[currentChannelIdx] = channelPower[currentChannelIdx] * 0.5f + p * 0.5f;
+        if (channelPower[currentChannelIdx] > channelPeak[currentChannelIdx]) {
+            channelPeak[currentChannelIdx] = channelPower[currentChannelIdx];
+        }
     }
     
-    // 5. Frekvenční skenování v pásmu 433 MHz (každých ~200 ms)
-    if (now - lastHopTime > 200) {
+    // Pozvolný pokles peaků ve spektru
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        channelPeak[i] = max(0.0f, channelPeak[i] - 0.008f);
+    }
+    
+    // 5. Frekvenční skenování v pásmu 433 MHz (každých ~180 ms)
+    if (now - lastHopTime > 180) {
         lastHopTime = now;
         currentChannelIdx = (currentChannelIdx + 1) % NUM_CHANNELS;
         
-        // Přejít do standby na 5 mikrosekund, změnit frekvenci a zpět do RX_CONTINUOUS
         writeSX1278Register(0x01, 0x80 | 0x01); // Standby
         LoRa.setFrequency(FREQ_CHANNELS[currentChannelIdx]);
         writeSX1278Register(0x01, 0x80 | 0x05); // Zpět do RX_CONTINUOUS
         
-        // Kosmický vítr: určen podle rozložení šumu napříč spektrem
         if (currentChannelIdx > NUM_CHANNELS / 2) {
             cosmicWind = (currentWideband > 0x12) ? 1 : 0;
         } else {
@@ -471,26 +605,37 @@ void handleButton() {
     static uint32_t lastDebounceTime = 0;
     bool reading = digitalRead(BOOT_BUTTON);
     
-    if (reading != lastBtnState && (millis() - lastDebounceTime > 60)) {
+    if (reading != lastBtnState && (millis() - lastDebounceTime > 80)) {
         lastDebounceTime = millis();
         lastBtnState = reading;
         if (reading == LOW) {
-            currentMode = (DisplayMode)((currentMode + 1) % MODE_COUNT);
-            burstFramesLeft = 8;
+            // Přepnutí režimu
+            activeVisualMode = (VisualMode)((activeVisualMode + 1) % VISUAL_COUNT);
+            modeBannerTimer = millis() + 1400; // Zobrazit banner na 1.4 sekundy
+            burstFramesLeft = 6;
         }
     }
 }
 
 // =============================================================================
-// LEDC PWM FIRE FLICKER LIGHT
+// LEDC PWM LIGHT (ADAPTIVE LIGHTING)
 // =============================================================================
 void updateFlickerLED() {
-    // LED svítí a mihotá se přesně podle energie ohně a rádiového šumu
-    int baseBrightness = map(constrain(currentRssi, -125, -60), -125, -60, 15, 160);
-    uint8_t flicker = harvestEntropyByte() % 50;
-    if (burstFramesLeft > 0) baseBrightness = 255;
-    int ledDuty = constrain(baseBrightness + flicker, 0, 255);
-    ledcWrite(0, ledDuty);
+    if (activeVisualMode == VISUAL_TESLA_LIGHTNING) {
+        // V režimu Tesla LED pulzuje jako stroboskop při výbojích
+        int ledVal = (int)(smoothedEnergy * 180.0f);
+        if (harvestEntropyByte() > 220) ledVal = 255;
+        ledcWrite(0, constrain(ledVal, 0, 255));
+    } else if (activeVisualMode == VISUAL_CYBER_SPECTRUM) {
+        // V režimu spektra LED svítí úměrně k signálu na aktuální frekvenci
+        int ledVal = (int)(channelPower[currentChannelIdx] * 255.0f);
+        ledcWrite(0, constrain(ledVal, 10, 255));
+    } else {
+        // V režimu ohně plápolá jako světlo krbu
+        int baseBrightness = (int)(smoothedEnergy * 160.0f);
+        uint8_t flicker = harvestEntropyByte() % 45;
+        ledcWrite(0, constrain(baseBrightness + flicker, 0, 255));
+    }
 }
 
 // =============================================================================
@@ -500,12 +645,12 @@ void setup() {
     Serial.begin(115200);
     delay(400);
     
-    Serial.println("\n╔══════════════════════════════════════════╗");
-    Serial.println("║       COSMIC RANDOM FIRE GENERATOR       ║");
-    Serial.println("║    LilyGo LoRa32 T3 V1.6.1 - 433 MHz     ║");
-    Serial.println("╚══════════════════════════════════════════╝");
+    Serial.println("\n╔═════════════════════════════════════════════════╗");
+    Serial.println("║    COSMIC RANDOM INTERFERENCE VISUALIZER        ║");
+    Serial.println("║       LilyGo LoRa32 T3 V1.6.1 - 433 MHz         ║");
+    Serial.println("║  [1] Tesla Arc  [2] Cyber Spectrum  [3] Fire    ║");
+    Serial.println("╚═════════════════════════════════════════════════╝");
     
-    // PWM pro stavovou LED
     ledcSetup(0, 5000, 8);
     ledcAttachPin(BOARD_LED, 0);
     ledcWrite(0, 100);
@@ -520,10 +665,10 @@ void setup() {
     
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(12, 22, "COSMIC NOISE");
-    u8g2.drawStr(24, 38, "RANDOM FIRE");
+    u8g2.drawStr(10, 22, "COSMIC SENSOR");
+    u8g2.drawStr(22, 38, "RF INTERFERENCE");
     u8g2.setFont(u8g2_font_4x6_tf);
-    u8g2.drawStr(10, 56, "LilyGo T3 433MHz SX1278");
+    u8g2.drawStr(12, 56, "Tesla / Spectrum / Fire");
     u8g2.sendBuffer();
     
     // LoRa SX1278 inicializace
@@ -540,12 +685,13 @@ void setup() {
         delay(2000);
     } else {
         Serial.println("[✓] LoRa SX1278 initialized on 433 MHz!");
-        LoRa.setSignalBandwidth(500E3); // Široké pásmo pro maximální sběr šumu
-        LoRa.setGain(6);                // Maximální citlivost
-        LoRa.receive();                 // Režim RX_CONTINUOUS
+        LoRa.setSignalBandwidth(500E3);
+        LoRa.setGain(6);
+        LoRa.receive();
     }
     
     initFire();
+    initSparks();
     delay(500);
 }
 
@@ -559,38 +705,48 @@ void loop() {
     // 1. Sběr rádiového a kosmického šumu
     sampleRFEnvironment();
     
-    // 2. Tlačítko BOOT
+    // 2. Obsluha tlačítka BOOT (přepínání režimů)
     handleButton();
     
-    // 3. Fyzika ohně a vykreslení do bufferu
-    updateFirePhysics();
-    renderFireToBuffer();
-    
-    // 4. Překryvné vrstvy režimů
-    if (currentMode == MODE_RF_WATERFALL) {
-        renderWaterfallMode();
+    // 3. Vykreslení podle aktivního vizuálního režimu
+    switch (activeVisualMode) {
+        case VISUAL_TESLA_LIGHTNING:
+            renderTeslaLightning();
+            break;
+            
+        case VISUAL_CYBER_SPECTRUM:
+            renderCyberSpectrum();
+            break;
+            
+        case VISUAL_COSMIC_FIRE:
+            updateFirePhysics();
+            renderFireToBuffer();
+            drawFireHUD();
+            break;
     }
-    drawHUD();
     
-    // 5. Odeslání do OLED
+    // 4. Překryvný banner při přepnutí režimu
+    drawModeBanner();
+    
+    // 5. Odeslání snímku do OLED
     u8g2.sendBuffer();
     
-    // 6. Mihotavá LED
+    // 6. Hardwarová LED
     updateFlickerLED();
     
-    // Měření FPS a telemetrie
+    // Telemetrie na Serial
     frameCount++;
     uint32_t now = millis();
     if (now - lastFpsCalc >= 1000) {
         fps = (float)frameCount * 1000.0f / (float)(now - lastFpsCalc);
         frameCount = 0;
         lastFpsCalc = now;
-        Serial.printf("[COSMIC FIRE] FPS: %.1f | Freq: %.2f MHz | RSSI: %d dBm | WB: 0x%02X | Energy: %.0f%% | Mode: %d\n",
+        Serial.printf("[COSMIC] FPS: %.1f | Freq: %.2f MHz | RSSI: %d dBm | WB: 0x%02X | Energy: %.0f%% | Mode: %d\n",
                       fps,
                       (float)FREQ_CHANNELS[currentChannelIdx] / 1000000.0f,
                       currentRssi,
                       currentWideband,
                       smoothedEnergy * 100.0f,
-                      (int)currentMode);
+                      (int)activeVisualMode);
     }
 }
